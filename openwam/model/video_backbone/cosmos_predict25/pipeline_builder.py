@@ -67,6 +67,11 @@ _COSMOS25_2B_NET_KWARGS: dict = dict(
     rope_w_extrapolation_ratio=3.0,
     rope_t_extrapolation_ratio=1.0,
     rope_enable_fps_modulation=False,
+    # Upstream 2B configs (video2world reason_1p1 / action_conditioned) feed the DiT sigma in
+    # [0, 1]: timesteps in [0, 1000] are scaled by 0.001.  Without it the pretrained network sees
+    # timesteps 1000x too large and its denoising is no better than its noisy input (checked on
+    # LIBERO latents, scripts/structwam/check_cosmos_npu.py).
+    timestep_scale=0.001,
     # NB: SACConfig defaults to mode="mm_only" upstream, which wraps every
     # block in a `_checkpoint_wrapped_module` shim and renames every state-dict
     # key (`blocks.0._checkpoint_wrapped_module.self_attn.q_proj.weight`). The
@@ -314,6 +319,13 @@ def build_cosmos_predict25_pipeline(
     variant = str(_cfg_get(vb_cfg, "model_variant", "base/post-trained"))
     shift_video = float(_cfg_get(vb_cfg, "shift_video", 5.0))
     sac_mode_raw = str(_cfg_get(vb_cfg, "sac_mode", "none")).lower()
+    # StructWAM: transformer-engine is CUDA-only; on Ascend build the DiT with the torch SDPA backend
+    # (and put npu_shims/ on PYTHONPATH for the TE RMSNorm / RoPE imports).
+    atten_backend = str(_cfg_get(vb_cfg, "atten_backend", _COSMOS25_2B_NET_KWARGS["atten_backend"]))
+    if atten_backend not in ("transformer_engine", "torch"):
+        raise ValueError(f"video_backbone.atten_backend={atten_backend!r} must be transformer_engine or torch.")
+    # StructWAM: upstream's use_wan_fp32_strategy without autocast(float32) (see npu_compat).
+    fp32_strategy = bool(_cfg_get(vb_cfg, "fp32_strategy", False))
     _valid_sac_modes = {"none", "mm_only", "block_wise"}
     if sac_mode_raw not in _valid_sac_modes:
         raise ValueError(
@@ -368,6 +380,10 @@ def build_cosmos_predict25_pipeline(
 
     import torch
 
+    # StructWAM: on hosts without transformer-engine (Ascend), expose the torch shim safely.
+    from openwam.model.video_backbone.cosmos_predict25.npu_compat import ensure_transformer_engine
+
+    ensure_transformer_engine()
     import_cosmos_predict2()
     # Late imports keep CPU CI green without the [cosmos_predict25] extra.
     import types
@@ -395,7 +411,7 @@ def build_cosmos_predict25_pipeline(
     # networks/minimal_v4_dit.py:1800).
     net = MinimalV1LVGDiT(
         sac_config=SACConfig(mode=CheckpointMode.NONE),
-        **_COSMOS25_2B_NET_KWARGS,
+        **{**_COSMOS25_2B_NET_KWARGS, "atten_backend": atten_backend},
     )
     # Deploy path (`ckpt_dir` non-None): the DiT params live inside the saved
     # safetensors (`CosmosPredict25VideoBackbone.net` is a registered nn.Module
@@ -415,6 +431,10 @@ def build_cosmos_predict25_pipeline(
         logger.info("Enabling Cosmos SAC selective-checkpoint (mode=%s) post-load", sac_mode_raw)
         net.enable_selective_checkpoint(SACConfig(mode=CheckpointMode(sac_mode_raw)), net.blocks)
     net = net.to(dtype=torch.bfloat16)
+    if fp32_strategy:
+        from openwam.model.video_backbone.cosmos_predict25.npu_compat import apply_fp32_strategy
+
+        logger.info("Cosmos fp32 strategy: %d float32 islands", apply_fp32_strategy(net))
 
     from openwam.model.video_backbone.cosmos_predict25.text_encoder import Reason1LiveTextEncoder
 

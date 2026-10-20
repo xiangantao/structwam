@@ -201,7 +201,8 @@ def finalize_block_loop(net: Any, state: BlockLoopState) -> Tensor:
         state.extras["t_embedding_B_T_D"],
         adaln_lora_B_T_3D=state.extras["adaln_lora_B_T_3D"],
     )
-    return net.unpatchify(x_B_T_H_W_O)
+    # The final layer may run as a float32 island (fp32 strategy); keep the backbone's dtype contract.
+    return net.unpatchify(x_B_T_H_W_O).to(state.hidden_states.dtype)
 
 
 __all__ = [

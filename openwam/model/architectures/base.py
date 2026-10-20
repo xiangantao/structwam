@@ -1385,6 +1385,7 @@ class BaseWAMArchitecture(ABC, nn.Module):
         cfg_scale: float = 1.0,
         cfg_merge: bool = False,
         active_action_mask: Optional[Tensor] = None,
+        initial_action_latents: Optional[Tensor] = None,
         **extra_pipeline_inputs: Any,
     ) -> dict:
         """Execute joint video-action denoising driven by a schedule.
@@ -1399,6 +1400,10 @@ class BaseWAMArchitecture(ABC, nn.Module):
             action_num_frames: Raw state/action window length. Generated
                 action chunk length is ``action_num_frames - 1``. Defaults to
                 ``num_frames`` for datasets whose video/action rates match.
+            initial_action_latents: Optional ``(1, T-1, action_dim)`` starting point
+                for the action stream (StructWAM sketch warm start). It must already
+                be noised to the action sigma of ``schedule[0]``; ``None`` keeps the
+                pure-noise start.
             active_action_mask: Optional ``(action_dim,)`` boolean mask for the
                 benchmark being generated. Inactive unified-action dimensions
                 stay on their analytic zero-padding noise path. When omitted,
@@ -1485,14 +1490,22 @@ class BaseWAMArchitecture(ABC, nn.Module):
                 raise ValueError("use_proprioception=True requires `proprio` during generation.")
             inputs_shared["proprio"] = proprio.to(device=device, dtype=dtype)
 
-        action_latents = torch.randn(
-            1,
-            action_num_frames - 1,
-            self.action_dim,
-            device=device,
-            dtype=dtype,
-            generator=torch.Generator(device=device).manual_seed(seed),
-        )
+        if initial_action_latents is not None:
+            expected = (1, action_num_frames - 1, self.action_dim)
+            if tuple(initial_action_latents.shape) != expected:
+                raise ValueError(
+                    f"initial_action_latents must be {expected}, got {tuple(initial_action_latents.shape)}"
+                )
+            action_latents = initial_action_latents.to(device=device, dtype=dtype)
+        else:
+            action_latents = torch.randn(
+                1,
+                action_num_frames - 1,
+                self.action_dim,
+                device=device,
+                dtype=dtype,
+                generator=torch.Generator(device=device).manual_seed(seed),
+            )
 
         # Unified-action checkpoints scatter raw actions into a larger zero-padded
         # space.  The inactive dimensions may be excluded from the training loss,

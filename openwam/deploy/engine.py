@@ -360,6 +360,8 @@ class JointInferenceEngine(BaseInferenceEngine):
                 "proprio": proprio,
                 "cfg_scale": self._cfg_scale,
                 "cfg_merge": self._cfg_merge,
+                # StructWAM: raw per-camera frame history for the structure student.
+                "structure_frames": conditions.get("structure_frames", None),
             }
         )
         result = self.architecture.generate(**generate_kwargs)

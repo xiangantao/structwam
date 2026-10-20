@@ -15,6 +15,7 @@ config; per-step dispatch is plain delegation.
 import numpy as np
 
 from openwam.deploy.engine import BaseInferenceEngine
+from openwam.structure.history import StructureHistory
 from openwam.deploy.executors import (
     AsyncInferenceExecutor,
     SyncInferenceExecutor,
@@ -49,6 +50,9 @@ class WAMPolicy:
                 engine=engine,
                 inference_horizon=self._execution_config.inference_horizon,
             )
+        # StructWAM: architectures with a structure student declare how many past frames they read.
+        length = getattr(getattr(engine, "architecture", None), "structure_history_length", None)
+        self._history = StructureHistory(int(length)) if length else None
 
     def predict_action(self, obs: dict) -> np.ndarray:
         """Return the next action for the given (already preprocessed) observation.
@@ -60,6 +64,8 @@ class WAMPolicy:
         values between the two legal commands. Threshold 0.5 preserves the
         downstream command contract for the WS server and direct consumers.
         """
+        if self._history is not None:
+            self._history.push(obs.get("raw_images"))
         action = self._executor.predict_action(self._build_conditions(obs))
         dims = getattr(getattr(self.engine, "architecture", None), "binary_command_dims", ()) or ()
         if dims:
@@ -76,6 +82,8 @@ class WAMPolicy:
     def reset(self):
         """Clear executor state between episodes."""
         self._executor.reset()
+        if self._history is not None:
+            self._history.reset()
 
     def shutdown(self):
         """Release executor resources (background threads in async mode)."""
@@ -99,4 +107,6 @@ class WAMPolicy:
             conditions["prompt"] = obs["prompt"]
         if "state" in obs and obs["state"] is not None:
             conditions["proprio"] = obs["state"]
+        if self._history is not None:
+            conditions["structure_frames"] = self._history.frames()
         return conditions

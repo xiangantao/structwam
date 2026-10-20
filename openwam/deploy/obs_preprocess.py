@@ -168,6 +168,12 @@ class ObsPreprocessor:
                 "The head camera feed is never optional on either single-view or multi-view servers."
             )
         head_pil = _as_pil(head_raw, ctx="images['head_camera']")
+        # StructWAM: the structure student reads the raw per-camera frames, not the canvas.
+        wrist_raw = imgs.get("left_wrist_camera")
+        obs["raw_images"] = {
+            "head": head_pil,
+            "wrist": _as_pil(wrist_raw, ctx="images['left_wrist_camera']") if wrist_raw is not None else None,
+        }
 
         # --- Dispatch by server's configured view mode ---
         if not self.multiview:

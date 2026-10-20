@@ -4,5 +4,6 @@ from openwam.model.architectures.tri_system.joint_self_attn import (
     TriSystemJointSelfAttnArchitecture,
 )
 from openwam.model.architectures.tri_system.mot_driver import TriSystemMoTDriver
+from openwam.model.architectures.tri_system.struct_system import TriSystemStructArchitecture
 
-__all__ = ["TriSystemJointSelfAttnArchitecture", "TriSystemMoTDriver"]
+__all__ = ["TriSystemJointSelfAttnArchitecture", "TriSystemMoTDriver", "TriSystemStructArchitecture"]
