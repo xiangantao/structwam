@@ -1,0 +1,5 @@
+{
+  "model": {"task": "shared"},
+  "teacher": {"denoise_updates": 13, "denoise_reference_updates": 13},
+  "train": {"output": "../runs/vace_structured_step13_reference"}
+}

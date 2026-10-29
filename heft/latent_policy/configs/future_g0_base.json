@@ -1,0 +1,60 @@
+{
+  "model": {
+    "task": "shared",
+    "vjepa_root": "../vjepa2",
+    "vjepa_weights": "../models/vjepa2/vitl.pt",
+    "image_size": 256,
+    "grid_size": 32,
+    "dim": 1024,
+    "text_dim": 4096,
+    "channels": 128,
+    "language_layers": 4,
+    "decoder_layers": 2,
+    "head_layers": 2,
+    "activation_checkpointing": true
+  },
+  "teacher": {
+    "image_size": 512,
+    "sigma": 0.8,
+    "scheduler_steps": 40,
+    "denoise_updates": 1,
+    "denoise_reference_updates": 13,
+    "future_depth_status": "unvalidated_protocol_transfer",
+    "seed_rule": "spatial_normalized_max"
+  },
+  "train": {
+    "manifest": "../runs/vace_latent_data_npu/episodes.jsonl",
+    "text_cache": "../runs/vace_latent_data_npu/text.pt",
+    "output": "../runs/future_runs_20261016/g0_base",
+    "steps": 600,
+    "batch_size": 32,
+    "teacher_batch_size": 8,
+    "accumulation_steps": 1,
+    "windows_per_episode_camera": 4,
+    "workers": 2,
+    "parallelism": "fsdp2",
+    "backbone_lr": 5e-05,
+    "head_lr": 0.0005,
+    "consistency_weight": 0.05,
+    "trajectory_weight": 0.0,
+    "cycle_weight": 0.0,
+    "depth_spatial_weight": 0.01,
+    "head_weights": {
+      "seg_l22h9": 1.0,
+      "seg_l15h7": 1.0,
+      "tracking": 2.0,
+      "semantic": 1.0,
+      "depth": 1.0
+    },
+    "log_every": 10,
+    "warmup_steps": 30,
+    "save_every": 300,
+    "tracking_diagnostics": true,
+    "tracking_target": "descriptor",
+    "semantic_spatial_weight": 1.0,
+    "depth_camera_weights": {
+      "observation.images.image": 0.0,
+      "observation.images.image2": 1.0
+    }
+  }
+}

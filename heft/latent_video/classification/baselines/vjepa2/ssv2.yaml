@@ -1,0 +1,37 @@
+data:
+  train: ../datasets/SSv2/labels/train.csv
+  val: ../datasets/SSv2/labels/validation.csv
+  videos: ../datasets/SSv2/videos
+  labels: ../datasets/SSv2/labels/labels.json
+  num_classes: 174
+  num_segments: 2
+  num_views_per_segment: 3
+  frame_step: 4
+  crop_size: 256
+model_path: ../models/vjepa2/vitl.pt
+vjepa_root: ../vjepa2
+output_dir: ../runs/ssv2_vjepa2_vitl_singlehead
+seed: 42
+num_workers: 4
+extract_batch_size: 32
+num_heads: 16
+num_probe_blocks: 4
+validate_every: 0
+clip:
+  frames: 16
+optimization:
+  batch_size: 32
+  num_epochs: 20
+  lr: 0.0003
+  weight_decay: 0.1
+  warmup: 0.0
+  final_lr: 0.0
+  amp_dtype: float16
+wandb:
+  enabled: true
+  project: heft-ssv2-latents
+  entity: 4351hhh-south-china-university-of-technology
+  name: vjepa2-vitl-singlehead
+  group: ssv2-frozen-comparison
+  mode: offline
+  log_every: 10

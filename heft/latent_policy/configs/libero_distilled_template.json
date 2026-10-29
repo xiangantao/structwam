@@ -1,0 +1,119 @@
+{
+  "dataset": {
+    "repo_id": "HuggingFaceVLA/libero",
+    "root": null,
+    "episodes": [],
+    "use_imagenet_stats": false,
+    "return_uint8": true,
+    "video_backend": "pyav",
+    "eval_split": 0.0,
+    "image_transforms": {
+      "enable": false
+    }
+  },
+  "policy": {
+    "type": "latent_act",
+    "encoder": "distilled",
+    "suite": "libero_spatial",
+    "task_names": [],
+    "device": "cuda",
+    "push_to_hub": false,
+    "history_frames": 16,
+    "image_size": 256,
+    "chunk_size": 16,
+    "n_action_steps": 8,
+    "extract_batch_size": 4,
+    "extract_lanes": 1,
+    "compile_blocks": false,
+    "checkpoint_encoder": true,
+    "need_attention_weights": false,
+    "input_features": {
+      "observation.state": {
+        "type": "STATE",
+        "shape": [
+          8
+        ]
+      },
+      "observation.images.image": {
+        "type": "VISUAL",
+        "shape": [
+          3,
+          256,
+          256
+        ]
+      },
+      "observation.images.image2": {
+        "type": "VISUAL",
+        "shape": [
+          3,
+          256,
+          256
+        ]
+      },
+      "observation.environment_state": {
+        "type": "ENV",
+        "shape": [
+          10
+        ]
+      }
+    },
+    "output_features": {
+      "action": {
+        "type": "ACTION",
+        "shape": [
+          7
+        ]
+      }
+    },
+    "dim_model": 256,
+    "n_heads": 8,
+    "dim_feedforward": 3200,
+    "n_encoder_layers": 4,
+    "n_decoder_layers": 1,
+    "n_vae_encoder_layers": 4,
+    "distilled_root": "",
+    "distilled_checkpoint": "",
+    "distilled_checkpoint_sha256": "",
+    "distilled_runtime_python": "",
+    "vjepa_root": ""
+  },
+  "env": {
+    "type": "libero",
+    "task": "libero_spatial",
+    "observation_height": 256,
+    "observation_width": 256,
+    "init_states": true,
+    "max_parallel_tasks": 1
+  },
+  "batch_size": 8,
+  "steps": 100000,
+  "seed": 42,
+  "num_workers": 2,
+  "prefetch_factor": 2,
+  "env_eval_freq": 0,
+  "eval_steps": 0,
+  "log_freq": 10,
+  "save_freq": 1000,
+  "save_checkpoint": true,
+  "save_checkpoint_to_hub": false,
+  "accelerator": {
+    "mixed_precision": "bf16"
+  },
+  "eval": {
+    "n_episodes": 50,
+    "batch_size": 1
+  },
+  "wandb": {
+    "enable": true,
+    "mode": "offline",
+    "project": "heft-libero-latents",
+    "entity": "4351hhh-south-china-university-of-technology",
+    "disable_artifact": true
+  },
+  "parallelism": {
+    "dp_replicate": 8,
+    "dp_shard": 1
+  },
+  "output_dir": null,
+  "job_name": "libero_spatial_distilled"
+}

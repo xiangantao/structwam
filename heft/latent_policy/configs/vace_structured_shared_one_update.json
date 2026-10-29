@@ -1,0 +1,13 @@
+{
+  "model": {"task": "shared"},
+  "teacher": {"denoise_updates": 1, "denoise_reference_updates": 13},
+  "train": {
+    "output": "../runs/vace_structured_smoke/step1_shared_one_update",
+    "steps": 1,
+    "batch_size": 1,
+    "accumulation_steps": 1,
+    "workers": 0,
+    "log_every": 1,
+    "save_every": 1
+  }
+}
