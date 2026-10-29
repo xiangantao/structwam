@@ -1,34 +1,158 @@
-# StructWAM workspace
+# StructWAM
 
-Code for StructWAM: an OpenWAM fork that adds a frozen VACE-distilled structure student
-(V-JEPA2 based) as a third expert next to the Cosmos-Predict2.5-2B video DiT and the action DiT.
-The layout mirrors the ModelArts workspace `/home/ma-user/work/2337888765/workspace`
-(a symlink to `/mnt/sfs-turbo-wangfei/2337888765/workspace`).
+**把视频生成模型里蒸馏出的“结构”，作为第三路专家接进世界-动作模型（World-Action Model），提升机器人策略在各种扰动下的鲁棒性。**
 
-| Path | Contents |
+一句话：几何结构管大动作，视频想象管精细的难点，动作分支按接触阶段决定听谁的。全程只在潜空间里工作，不生成像素。
+
+---
+
+## 1. 项目在做什么
+
+### 出发点
+
+[OpenWAM](https://github.com/OpenWAM-Official/OpenWAM) 这类世界-动作模型，让一个视频 DiT 和一个动作 DiT 在每一层做联合注意力：模型一边“想象”未来画面，一边预测动作。它在分布内表现很好，但换背景、换相机视角、改机器人初始位姿、加传感器噪声时，成功率会明显下降（见 LIBERO-plus 基准）。
+
+我们的假设：如果策略能拿到一份**对外观扰动不敏感的场景结构**，比如哪些区域是物体、关键点往哪里运动、指令里的词落在画面哪里，动作预测就不必完全依赖像素外观，鲁棒性会更好。
+
+### 结构从哪里来
+
+结构来自我们之前的工作（`heft/`）：从视频生成模型 **Wan2.1-VACE** 蒸馏出一个**结构学生**，主干是 V-JEPA2。它对每个相机输出：
+
+- 区域图（K 个分段，形成场景的无监督分割）；
+- 关键点轨迹（现在到 +16 帧）；
+- V-JEPA2 主干特征；
+- 指令内容词的注意力热图（“选词模式”：按热图集中度保留最多 5 个词，由模型自己判断哪个是目标、哪个是目的地）。
+
+学生在 StructWAM 里**完全冻结**，通过 `heft/latent_policy/src/latent_dp` 里的 `OnlineMaps` 在线计算。
+
+### StructWAM 的结构：三路专家
+
+| 分支 | 实现 | 内容 |
+|---|---|---|
+| 视频 | Cosmos-Predict2.5-2B（机器人后训练权重 `robot/action-cond`） | 只在潜空间里训练；推理时只去噪 1–2 步，从不解码 |
+| 动作 | OpenWAM 的 ActionDiT | 32 步动作块，统一 80 维动作空间 |
+| 结构 | 冻结的 VACE 学生 + 可训练的结构专家 | 每个相机：64 个图 token、32 个关键点轨迹 token、16 个主干 token、最多 5 个词 token |
+
+三路 token `[视频 | 动作 | 结构]` 在视频 DiT 的每一层做一次联合注意力。骨架沿用 OpenWAM 的三系统 MoT，只是把 VLM 理解专家换成了结构专家。
+
+### 结构如何发挥作用
+
+1. **阶段门控（结构 → 动作）**：门控预测“这个动作块离接触有多近”，监督信号来自示范里的夹爪指令。它给动作 token 的注意力加偏置：离接触远时多看结构，接近接触时多看视频，尤其是腕部画面所在的区域。
+2. **草图热启动（结构 → 动作）**：草图头只用结构和本体状态预测整个动作块；推理时动作去噪从“草图加噪到 t=600”开始，而不是从纯噪声开始。
+3. **训练约束（结构 → 视频）**：
+   - 视频损失按显著区域和样本难度加权；
+   - 轨迹一致性：预测出的下一潜帧在学生轨迹指向的位置上，要和当前帧外观一致；
+   - REPA 式对齐：视频 DiT 中间层特征对齐学生的 V-JEPA2 主干。
+4. **结构读视频（视频 → 结构）**：结构 token 可以读视频 token，用世界模型的知识修正远期轨迹。
+5. **视频损失也训练结构专家**：默认 `video_detach: []`。消融时可以设成 `[structure]`，切断这条梯度。
+
+完整的设计和改动清单见 [`StructWAM/STRUCTWAM.md`](StructWAM/STRUCTWAM.md)。
+
+### 昇腾 NPU 移植
+
+全部训练都在 8×Ascend 910B3 上完成：
+
+- **transformer-engine**：用纯 PyTorch 的 shim 替代（`StructWAM/npu_shims`），在 NPU 上自动调用 torch_npu 融合算子。
+- **修正了 OpenWAM 的一个缺陷**：Cosmos-Predict2.5 漏了上游的 `timestep_scale=0.001`，网络看到的时间步大了 1000 倍，预训练的去噪能力用不上。已补上。
+- **float32 策略**：用“float32 计算岛”实现，不依赖 NPU 不支持的 float32 autocast。
+- **联合注意力按行分组**：视频行和结构行走融合注意力，只有动作行带门控偏置。结果和整段浮点掩码一致，单层快 3.7 倍。
+
+---
+
+## 2. 实验结果
+
+### 评测协议（LIBERO-plus）
+
+- 按 task-sample-seed 42 抽取 10% 的任务，共 1005 个，每个任务跑 1 次。
+- 使用干净指令：去掉指令里的扰动编号。
+- 每个 episode 最多 600 个环境步（libero_10 为 700）。这比官方 LIBERO 的上限（220/280/300/520）宽松，所以下面的数字只适合内部比较；要和排行榜比，需要用官方上限重跑。
+- 模型之间用配对 McNemar 检验比较。
+
+### 主结果
+
+| 模型 | 总成功率 |
 |---|---|
-| `StructWAM/` | The model code. History of OpenWAM-Official/OpenWAM up to upstream `4d7f642` (here `7c3cd8d`: same trees and authors, co-author trailers dropped), then the StructWAM commits |
-| `heft/latent_policy`, `heft/latent_video` | The structure student and its distillation code (snapshot of xiangantao/good_state at `2fd6a9d` plus uncommitted work) |
-| `runs/` | Training-pool jobs, LIBERO / LIBERO-plus evaluation wrappers, tests and diagnostics, the `command.txt` of each run |
-| `sysdeps/hce2_aarch64/env.sh` | Environment for the ImageMagick / Mesa-DRI libraries LIBERO-plus clients need on stock pool images (the libraries themselves are not in the repo) |
+| **StructWAM s40000** | **75.2%** |
+| OpenWAM-Cosmos 40k（同样的 Cosmos 视频骨架，同样训练 40k 步，不带结构） | 71.2% |
+| StructWAM s24000 | 69.1% |
 
-Not in the repo: checkpoints, datasets, pretrained weights, conda envs (`envs/openwam-npu`,
-`envs/libero-plus`), evaluation outputs and the sysdeps binaries; they stay on the SFS.
-V-JEPA2 is facebookresearch/vjepa2 at `204698b`, unmodified.
+StructWAM 40k 对 OpenWAM 40k：配对胜负 91/51，**p = 0.001**。
 
-## Restoring on a new machine
+| 扰动类别 | StructWAM | OpenWAM | p |
+|---|---|---|---|
+| 背景 | 69.4 | 57.5 | 0.011 |
+| 机器人初始位姿 | 92.3 | 81.5 | 0.004 |
+| 相机视角 | 43.3 | 37.6 | 0.14（不显著） |
+| 传感器噪声 | 58.5 | 57.4 | 不显著 |
+| 光照 | 93.8 | 96.4 | 略差，不显著 |
+| 语言 | 93.4 | 95.4 | 略差，不显著 |
 
-The scripts use absolute paths under `/home/ma-user/work/2337888765` and
-`/mnt/sfs-turbo-wangfei/2337888765`. Either clone this repo as that `workspace/` directory, or
-replace those prefixes. `tri_system_struct.yaml` also names `latent_policy_root`.
+按任务套件看，StructWAM 在 goal 上 +7.7（p = 0.003），在 spatial 上 +5.4，在 libero_10 上和 OpenWAM 持平。相机视角和传感器噪声仍然是短板。
+
+### 诊断实验
+
+| 问题 | 做法 | 结论 |
+|---|---|---|
+| 结构专家主要被什么训练？ | 对 s40000 按每个损失项求梯度（`runs/structwam_grad_attr_20261027`） | 视频损失和轨迹一致性的梯度各约为动作损失的 10 倍，但方向几乎相反（后几层 qkv 的余弦约 −1），互相抵消；视频梯度 99% 走直接路径。这是做 `video_detach=[structure]` 消融的原因 |
+| 学生的结构在扰动下还靠谱吗？ | 在 167 个 LIBERO-plus 场景上测学生 K 分段的涌现分割质量（`runs/student_seg_robustness_20261027`） | kNN 纯度：头部 0.55–0.65、腕部 0.78，原始 V-JEPA2 只有约 0.2 / 0.29。换视角只降约 0.06，传感器噪声影响最大 |
+| latent 单独接到 DP 策略上有用吗？ | libero_spatial 闭环，RGB+latent 对比只用 RGB | 两组设置分别是 71.6 vs 71.2、56.0 vs 67.6，分布内没有增益 |
+| 能否用 latent 的状态转移在线校准动作？ | 离线检验 | R² 为 −17.7，不如直接重复上一个动作（0.19），已放弃 |
+| 视频 dropout 会不会拖慢正常路径？ | b0 的 10k 检查点上做配对测量（`runs/structwam_a123_tests_20261027/measure_dropout_loss.py`） | 看得到视频时 action loss 0.0268，和原版同步数的 0.0257 一样；看不到视频时 0.0429。训练日志 loss 偏高，完全是被遮住的那 30% 样本造成的 |
+
+### 进行中的消融（2026-10-27 起，各 40k 步，8 NPU）
+
+入口：`runs/structwam_a123_20261027/train_arm_modelarts.sh ARM`
+
+| 变体 | 视频损失训练结构专家 | 轨迹一致性 | 视频 dropout | 数据增强 | 画布 |
+|---|---|---|---|---|---|
+| 原版（已评测，75.2%） | 是 | 开 | — | — | L 形（头部 256×320，腕部 128×160） |
+| a2 | 否 | 关 | 0.3 | — | L 形 |
+| b2 | 否 | 关 | 0.3 | 默认 | L 形 |
+| b0 | 是 | 开 | 0.3 | 默认 | L 形 |
+| c0 | 是 | 开 | 0.3 | 对齐 π0.5 | 左右并排，256×512 |
+
+- **视频 dropout**：训练时 30% 的样本，动作和结构 token 看不到视频 token，迫使动作学会利用结构。推理时不启用。
+- **默认增强**：
+  - 头部：旋转 ±4°、放大 1–1.2 倍、20% 概率轻微模糊；
+  - 两个相机：亮度、对比度、饱和度抖动；
+  - 视频画布、首帧条件和学生的 33 帧历史用同一套变换。
+- **c0**：
+  - 画布：头部和腕部各 256×256 左右并排（原来的腕部只有 128×160）；
+  - 增强参数向 π0.5 / Cosmos-Policy 看齐：旋转 ±5°、裁剪约 90%、亮度 0.3 / 对比度 0.4 / 饱和度 0.5 / 色相 0.05，两个相机的颜色各自独立抽样。
+- `a1`（a2 去掉 dropout）和 `a3`（再去掉主干 token 组）在脚本里定义了，但还没跑。
+
+### 和其他工作比较时要注意
+
+- **Robust-WAM**：它的 LIBERO-plus 评测按策略调用次数计步，每次执行 8 个动作，实际允许的环境步数远多于我们的设置，数字不能直接比。
+- **OA-WAM**：用了仿真器的真值物体位姿。
+- **Cosmos-Policy**：训练样本量约是我们的 30 倍。
+
+---
+
+## 3. 仓库结构
+
+目录结构和 ModelArts 上的 workspace `/home/ma-user/work/2337888765/workspace` 一致；这个路径是到 `/mnt/sfs-turbo-wangfei/2337888765/workspace` 的软链接。
+
+| 路径 | 内容 |
+|---|---|
+| `StructWAM/` | 模型代码。保留了 OpenWAM-Official/OpenWAM 到上游 `4d7f642` 的历史（本仓库里是 `7c3cd8d`：树和作者都没变，只去掉了 co-author 尾注），后面接 StructWAM 的提交 |
+| `heft/latent_policy`、`heft/latent_video` | 结构学生及其蒸馏代码（来自 xiangantao/good_state 的 `2fd6a9d`，加上当时未提交的改动） |
+| `runs/` | 训练池任务、LIBERO / LIBERO-plus 评测包装、测试和诊断脚本、各个 run 的 `command.txt` 和已评测检查点的 `config.yaml` |
+| `sysdeps/hce2_aarch64/env.sh` | LIBERO-plus 客户端在原生训练池镜像上需要的 ImageMagick / Mesa-DRI 库的环境脚本（库文件本身不在仓库里） |
+
+不在仓库里的（都在 SFS 上）：检查点、数据集、预训练权重、conda 环境（`envs/openwam-npu`、`envs/libero-plus`）、评测输出、sysdeps 的二进制库。V-JEPA2 用的是 facebookresearch/vjepa2 的 `204698b`，没有改动。
+
+## 4. 换机后怎么恢复
+
+脚本里写死了 `/home/ma-user/work/2337888765` 和 `/mnt/sfs-turbo-wangfei/2337888765` 这两个绝对路径前缀。可以把这个仓库克隆成那个 `workspace/` 目录，也可以批量替换这两个前缀。`tri_system_struct.yaml` 里的 `latent_policy_root` 也要相应改。
 
 ```bash
 export PYTHONPATH="$WORKSPACE/StructWAM:$WORKSPACE/heft/latent_policy/src:$WORKSPACE/heft"
 ```
 
-## Entry points
+## 5. 常用入口
 
-- Training arm (8 NPUs, auto-resume): `runs/structwam_a123_20261027/train_arm_modelarts.sh {a1|a2|a3|b2|b0|c0}`
-- LIBERO-plus 10% clean protocol: `runs/libero_plus_sample10_clean/eval_libero_plus_modelarts.sh NAME CKPT_DIR CKPT_NAME`
-- OpenWAM-Cosmos baseline evaluation: `runs/stage0_libero_plus_20261027/eval_openwam_baseline_modelarts.sh`
-- What StructWAM adds to OpenWAM: `StructWAM/STRUCTWAM.md`
+- 训练一个消融变体（8 NPU，自动从最近的检查点续训）：`runs/structwam_a123_20261027/train_arm_modelarts.sh {a1|a2|a3|b2|b0|c0}`
+- LIBERO-plus 10% 干净指令评测：`runs/libero_plus_sample10_clean/eval_libero_plus_modelarts.sh NAME CKPT_DIR CKPT_NAME`
+- OpenWAM-Cosmos 基线评测：`runs/stage0_libero_plus_20261027/eval_openwam_baseline_modelarts.sh`
+- 新增功能的测试：`runs/structwam_a123_tests_20261027/test_*.py`
