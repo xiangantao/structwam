@@ -205,3 +205,4 @@ export PYTHONPATH="$WORKSPACE/StructWAM:$WORKSPACE/heft/latent_policy/src:$WORKS
 - LIBERO-plus 10% 干净指令评测：`runs/libero_plus_sample10_clean/eval_libero_plus_modelarts.sh NAME CKPT_DIR CKPT_NAME`
 - OpenWAM-Cosmos 基线评测：`runs/stage0_libero_plus_20261027/eval_openwam_baseline_modelarts.sh`
 - 新增功能的测试：`runs/structwam_a123_tests_20261027/test_*.py`
+- 检查点自动上传到 Hugging Face 私有仓库：`runs/hf_ckpt_uploader/`（`login.sh` 登录一次，`start.sh` 后台启动，`stop.sh` 停止；冻结的 Reason1 和 VAE 靠 hf_xet 去重，每个新检查点实际只传约 6 GB）
