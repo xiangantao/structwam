@@ -18,4 +18,9 @@ if [[ " $* " == *" --once "* ]]; then
     exec "$PY" "$D/hf_ckpt_uploader.py" "${ARGS[@]}"
 fi
 nohup setsid "$PY" "$D/hf_ckpt_uploader.py" "${ARGS[@]}" >> "$D/uploader.log" 2>&1 < /dev/null &
-echo "uploader started (pid $!), log: $D/uploader.log"
+# Stay up until the child has left this session: under `ssh -t` an immediate exit hangs it up.
+sleep 3
+if ! pgrep -f "python.*hf_ckpt_uploader.py" >/dev/null; then
+    echo "uploader did not start; see $D/uploader.log"; exit 1
+fi
+echo "uploader started, log: $D/uploader.log"
