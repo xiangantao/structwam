@@ -1,0 +1,173 @@
+model:
+  video_backbone:
+    name: cosmos_predict25_2b
+    model_path: /home/ma-user/work/2337888765/workspace/models/Cosmos-Predict2.5-2B
+    model_variant: robot/action-cond
+    text_encoder_path: /home/ma-user/work/2337888765/workspace/models/Cosmos-Reason1-7B
+    text_encoder_dropout: 0.0
+    vae: wan2pt1
+    shift_video: 5.0
+    atten_backend: torch
+    fp32_strategy: true
+    components:
+    - attr: vae
+      source: state_dict
+      sub_module: vae
+    - attr: text_encoder
+      source: state_dict
+      sub_module: reason1
+  action_backbone:
+    dim: 1024
+    ffn_dim: 4096
+    shift_action: 5.0
+  freeze:
+  - video_backbone.text_encoder
+  - video_backbone.reason1
+  - video_backbone.vae
+  - video_backbone.image_encoder
+  - video_backbone.video_encoder
+  architecture:
+    framework: tri_system
+    variant: struct_expert
+    action_dim: 80
+    use_proprioception: true
+    state_dim: 80
+    attention_mask_mode: mutual
+    video_attention_mask_mode: first_frame_causal
+    bridge_layers: null
+    bridge_interval: 1
+    mot_checkpoint_mixed_attn: true
+    structure_expert:
+      dim: 512
+      ffn_dim: 2048
+      eps: 1.0e-05
+      groups:
+      - map
+      - keypoint
+      - trunk
+      - word
+    structure:
+      cameras:
+      - head
+      - wrist
+      horizon: 32
+      structure_reads_video: true
+      video_detach: []
+      align_layer: null
+      gate_teacher_forcing: 0.5
+      action_video_dropout: 0.3
+      log_every: 1
+      student:
+        latent_policy_root: /home/ma-user/work/2337888765/workspace/heft/latent_policy
+        checkpoint: /home/ma-user/work/2337888765/workspace/runs/mainline_20261016/g2_full/step_0002000.pt
+        roles: null
+        text_root: null
+        appearance_stats: /home/ma-user/work/2337888765/workspace/runs/dp_stacked_20261018/maps/stats.npz
+        history: 33
+        image_size: 256
+        workers: 8
+      routing:
+        enabled: true
+        init_structure: 1.0
+        init_video: 1.0
+        init_wrist: 0.5
+      losses:
+        video_saliency: 2.0
+        difficulty:
+        - 1.0
+        - 0.5
+        - 0.0
+        lambda_phase: 0.1
+        lambda_sketch: 0.0
+        lambda_align: 0.5
+        lambda_track: 0.1
+      inference:
+        near_threshold: 0.5
+        video_steps_far: 1
+        video_steps_near: 2
+        sketch_start_t: null
+      structure_only_action: false
+dataloader:
+  type: libero_struct
+  dataset_dir: /home/ma-user/work/2337888765/workspace/datasets/openwam/libero
+  action_mode: eef
+  unify_action: true
+  unify_action_map:
+  - 0-9
+  unify_state_map: null
+  num_frames: 33
+  video_stride: 4
+  window_stride: 1
+  split: train
+  height: 384
+  width: 320
+  multiview: true
+  camera_layout:
+  - observation.images.image
+  - observation.images.image2
+  - null
+  target_camera: observation.images.image
+  normalize_mode: min-max
+  color_jitter:
+    enabled: false
+    brightness: 0.2
+    contrast: 0.2
+    saturation: 0.2
+    hue: 0.0
+  structure_history: 33
+  structure_size: 256
+  structure_flip: none
+  phase_sigma: 8.0
+  structure_augment:
+    enabled: true
+    rotate_deg: 4.0
+    scale_max: 1.2
+    brightness: 0.25
+    contrast: 0.25
+    saturation: 0.3
+    blur_prob: 0.2
+    blur_radius: 1.5
+  seed: 42
+training:
+  debug: false
+  learning_rate: 0.0001
+  adam_betas:
+  - 0.9
+  - 0.95
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  num_epochs: null
+  max_steps: 40000
+  stop_step: null
+  batch_size: 8
+  gradient_accumulation_steps: 2
+  lr_scheduler: cosine
+  warmup_ratio: 0.05
+  lr_min_ratio: 0.01
+  action_lr: null
+  video_lr: null
+  mixed_precision: bf16
+  zero_stage: 2
+  use_gradient_checkpointing: true
+  use_gradient_checkpointing_offload: false
+  initialize_model_on_cpu: false
+  offload_optimizer_device: none
+  lambda_video: 1.0
+  lambda_action: 1.0
+  max_timestep_boundary: 1.0
+  min_timestep_boundary: 0.0
+  output_path: /home/ma-user/work/2337888765/workspace/runs/structwam_a123_20261027/b0/checkpoints
+  save_steps: 2000
+  save_full_states_for_resume: true
+  keep_last_k_ckpts: 2
+  finetune_ckpt_path: null
+  resume_ckpt_path: null
+  dataset_num_workers: 4
+project:
+  name: structwam
+  output_dir: /home/ma-user/work/2337888765/workspace/runs/structwam_a123_20261027/b0/hydra
+  seed: 42
+  wandb:
+    project: openwam
+    run_name: null
+    entity: null
