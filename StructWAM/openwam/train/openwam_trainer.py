@@ -230,6 +230,10 @@ class OpenWAMTrainer:
                 save_steps = int(save_steps)
         keep_last_k = int(getattr(t, "keep_last_k_ckpts", 3))
         save_full_states_for_resume = bool(getattr(t, "save_full_states_for_resume", False))
+        # stop_step: end this job early with a resumable full state while the LR schedule keeps
+        # following max_steps (resume with a larger / no stop_step to continue the same run).
+        stop_step = getattr(t, "stop_step", None)
+        stop_step = int(stop_step) if stop_step else None
 
         # Finetune warm-start weights were already loaded at architecture
         # construction (__init__, self-contained ckpt-dir path). Step stays 0.
@@ -281,6 +285,11 @@ class OpenWAMTrainer:
                 logger.info("[resume] global_step=%d already complete; finishing.", global_step)
                 self.finish_training(output_path, global_step, save_steps, keep_last_k, is_main, wandb_run)
                 return
+            if stop_step and global_step >= stop_step:
+                logger.info("[resume] global_step=%d already at stop_step=%d; nothing to do.", global_step, stop_step)
+                if wandb_run is not None:
+                    wandb_run.finish()
+                return
             if skip_first > 0 and self._run_seed is None:
                 logger.warning(
                     "[resume] mid-epoch resume (skip_first=%d) without project.seed: DataLoader "
@@ -327,6 +336,12 @@ class OpenWAMTrainer:
                     if self.accelerator.sync_gradients:
                         if max_grad_norm is not None:
                             grad_norm_val = self.accelerator.clip_grad_norm_(all_params, max_grad_norm)
+                            # Accelerate < 1.2 returns None for DeepSpeed: clipping and
+                        # stepping already happened in accelerator.backward(). Read
+                        # the engine's recorded norm instead of clipping a second time.
+                        if grad_norm_val is None and hasattr(self.architecture, "get_global_grad_norm"):
+                            grad_norm_val = self.architecture.get_global_grad_norm()
+                        if grad_norm_val is not None:
                             grad_norm = torch.tensor(float(grad_norm_val), device=loss.device)
                         optimizer.step()
                         if scheduler is not None:
@@ -369,6 +384,23 @@ class OpenWAMTrainer:
                 if max_steps and global_step >= max_steps:
                     pbar.close()
                     self.finish_training(output_path, global_step, save_steps, keep_last_k, is_main, wandb_run)
+                    return
+
+                if stop_step and global_step >= stop_step:
+                    # Keep the resume state (finish_training would drop it): weights + full state
+                    # at this step, unless the periodic save above already wrote them.
+                    saved_now = bool(save_steps) and global_step % save_steps == 0
+                    if not saved_now:
+                        save_weights(self.accelerator, self.architecture, output_path, global_step, final=False)
+                    if not (saved_now and save_full_states_for_resume):
+                        save_full_state(self.accelerator, output_path, global_step, opt_step, epoch)
+                    self.accelerator.wait_for_everyone()
+                    if is_main:
+                        manage_checkpoints(output_path, keep_last_k)
+                    pbar.close()
+                    logger.info("stop_step=%d reached: weights and resume state saved in %s", stop_step, output_path)
+                    if wandb_run is not None:
+                        wandb_run.finish()
                     return
 
         pbar.close()

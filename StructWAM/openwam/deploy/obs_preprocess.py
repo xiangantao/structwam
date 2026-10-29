@@ -85,8 +85,10 @@ class ObsPreprocessor:
         img_height: int,
         img_width: int,
         requires_proprio: bool = False,
+        canvas_layout: str = "lshape",
     ):
         self.multiview = bool(multiview)
+        self.canvas_layout = str(canvas_layout or "lshape")
         self.camera_layout = list(camera_layout)
         self.img_height = int(img_height)
         self.img_width = int(img_width)
@@ -115,6 +117,7 @@ class ObsPreprocessor:
             img_height=int(_h if _h is not None else 384),
             img_width=int(_w if _w is not None else 320),
             requires_proprio=_resolve_requires_proprio(cfg, engine),
+            canvas_layout=(getattr(dl, "canvas_layout", None) if dl is not None else None) or "lshape",
         )
 
     def preprocess(self, obs: dict) -> dict:
@@ -209,6 +212,7 @@ class ObsPreprocessor:
                 camera_layout=self.camera_layout,
                 out_h=self.img_height,
                 out_w=self.img_width,
+                mode=self.canvas_layout,
             )
 
         # --- Prompt passthrough (server is prompt-agnostic; normalize missing to "") ---

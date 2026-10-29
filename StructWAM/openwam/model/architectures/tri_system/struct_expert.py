@@ -18,7 +18,7 @@ from openwam.model.architectures.tri_system.und_expert import (
     UnderstandingExpertBlock,
     UnderstandingExpertConfig,
 )
-from openwam.structure.tokens import StructureTokenizer
+from openwam.structure.tokens import GROUPS, StructureTokenizer
 
 
 @dataclass
@@ -30,6 +30,7 @@ class StructureExpertConfig:
     cameras: Sequence[str] = ("head", "wrist")
     map_channels: int = 37
     word_slots: int = 5
+    groups: Sequence[str] = GROUPS
 
 
 @dataclass
@@ -52,7 +53,7 @@ class StructureExpert(UnderstandingExpert):
         self.structure_cfg = cfg
         self._num_heads = wan_num_heads
         self._head_dim = wan_dim // wan_num_heads
-        self.tokenizer = StructureTokenizer(cfg.dim, cfg.cameras, cfg.map_channels, cfg.word_slots)
+        self.tokenizer = StructureTokenizer(cfg.dim, cfg.cameras, cfg.map_channels, cfg.word_slots, cfg.groups)
         self.blocks = nn.ModuleList(
             [UnderstandingExpertBlock(block_cfg, wan_dim, wan_num_heads) for _ in range(cfg.num_layers)]
         )

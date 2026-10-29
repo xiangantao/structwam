@@ -83,8 +83,20 @@ def _build_accelerator(cfg: DictConfig):
         offload_optimizer_device=str(t.offload_optimizer_device),
     )
 
+    # ZeRO-2/3 partitions gradients during backward and cannot enter no_sync.
+    # DeepSpeed owns accumulation and optimizer updates; allow reduction on each
+    # micro-batch without changing the configured optimizer-update interval.
+    # Do not force a partial update at the end of a dataloader: DeepSpeed's
+    # accumulation counter continues across epochs.
+    from accelerate.utils import GradientAccumulationPlugin
+
+    accumulation = GradientAccumulationPlugin(
+        num_steps=grad_accum,
+        sync_each_batch=True,
+        sync_with_dataloader=False,
+    )
     return accelerate.Accelerator(
-        gradient_accumulation_steps=grad_accum,
+        gradient_accumulation_plugin=accumulation,
         deepspeed_plugin=plugin,
         mixed_precision=mixed_precision,
     )

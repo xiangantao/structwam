@@ -50,6 +50,23 @@ class CanvasLayout:
     """Camera tiles of the multiview canvas, as fractions of its height / width."""
 
     tiles: tuple = (("head", 0.0, 2 / 3, 0.0, 1.0), ("wrist", 2 / 3, 1.0, 0.0, 0.5))
+    mode: str = "lshape"
+
+    @classmethod
+    def for_mode(cls, mode: str = "lshape") -> "CanvasLayout":
+        """Tiles of the reader's ``canvas_layout``: "lshape" (default) or "side_by_side" (head | wrist)."""
+        if mode == "lshape":
+            return cls()
+        if mode == "side_by_side":
+            return cls(tiles=(("head", 0.0, 1.0, 0.0, 0.5), ("wrist", 0.0, 1.0, 0.5, 1.0)), mode=mode)
+        raise ValueError(f"canvas layout must be lshape or side_by_side, got {mode!r}")
+
+    def check_grid(self, height: int, width: int) -> None:
+        """Fail loudly if a latent / token grid's aspect does not match this canvas mode."""
+        wide = width >= 1.5 * height
+        if wide != (self.mode == "side_by_side"):
+            raise ValueError(f"canvas layout {self.mode!r} does not match a {height}x{width} grid; set "
+                             "model.architecture.structure.canvas_layout to the dataloader's canvas_layout")
 
     def tile(self, camera: str):
         for name, top, bottom, left, right in self.tiles:

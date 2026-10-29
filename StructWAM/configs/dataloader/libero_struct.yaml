@@ -37,6 +37,7 @@ height: 384
 width: 320
 multiview: true
 camera_layout: [observation.images.image, observation.images.image2, null]
+canvas_layout: lshape          # lshape (above) | side_by_side: head | wrist at H x W/2 each (e.g. 256x512)
 target_camera: observation.images.image
 
 # ── Normalization ────────────────────────────────────────────────────────────
@@ -60,3 +61,17 @@ structure_history: 33        # raw frames per camera ending at the present (stud
 structure_size: 256          # student resolution
 structure_flip: none         # none | hflip | vflip | rot180 — match the student's training orientation
 phase_sigma: 8.0             # contact-phase width in frames
+
+# One augmentation draw per training sample, applied to the canvas video, the first-frame condition
+# and the student's history alike (openwam/structure/augment.py).  Off = byte-identical samples.
+structure_augment:
+  enabled: false
+  rotate_deg: 4.0              # head: max |in-plane rotation|
+  scale_max: 1.2               # head: max zoom (no border is ever exposed)
+  brightness: 0.25             # both cameras, one factor per sample
+  contrast: 0.25
+  saturation: 0.3
+  blur_prob: 0.2               # head: Gaussian blur probability
+  blur_radius: 1.5             # head: max radius in px at 256 px width
+  hue: 0.0                     # hue shift in [-x, x] (fraction of the hue circle)
+  independent_color: false     # true: separate color draws for head and wrist (pi0.5 style)

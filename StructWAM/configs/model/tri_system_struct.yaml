@@ -36,17 +36,20 @@ architecture:
     dim: 512
     ffn_dim: 2048
     eps: 1.0e-5
+    groups: [map, keypoint, trunk, word]   # structure token groups the tokenizer emits
 
   structure:
     cameras: [head, wrist]
+    canvas_layout: lshape          # must equal dataloader.canvas_layout (checked against the latent grid)
     horizon: 32                    # = dataloader.num_frames - 1
     structure_reads_video: true
-    # Video reads these streams without its losses training them (forward unchanged).  With only
-    # structure, the video loss can still reach the structure expert through the action tokens;
-    # [structure, action] closes that too (the video loss then stops training the action stream).
-    video_detach: [structure]
+    # Video losses train the structure expert through its attention keys/values.
+    # Opt in to gradient blocking with [structure] (direct path only) or
+    # [structure, action] (also blocks the indirect path through action tokens).
+    video_detach: []
     align_layer: null              # null = middle video layer
     gate_teacher_forcing: 0.5      # prob. of routing with the demo phase label instead of the prediction
+    action_video_dropout: 0.0      # training: per-sample prob. that action + structure rows see no video keys
     log_every: 50                  # structure loss terms -> training log (rank 0)
 
     student:
@@ -78,3 +81,4 @@ architecture:
       video_steps_far: 1
       video_steps_near: 2
       sketch_start_t: null         # sketch warm start off; 600 = start action denoising from the noised sketch
+    structure_only_action: false # true: action + structure rows see no video keys at inference

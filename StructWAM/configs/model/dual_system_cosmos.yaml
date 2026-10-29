@@ -1,0 +1,5 @@
+# OpenWAM baseline: Cosmos video DiT + ActionDiT, without structure.
+defaults:
+  - dual_system
+  - override video_backbone: cosmos_predict25_2b_robot
+  - _self_

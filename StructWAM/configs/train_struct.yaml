@@ -6,9 +6,23 @@ defaults:
   - _self_
 
 training:
-  batch_size: 4                    # per device; the structure student also runs on each device
-  dataset_num_workers: 8
+  num_epochs: null                # step-only training
+  max_steps: 40000                 # micro-batches; ~20000 optimizer updates with accumulation=2
+  batch_size: 8                    # per device; 8 NPUs x 8 x 2 = effective batch 128
+  gradient_accumulation_steps: 2  # update parameters every two micro-batches
+  dataset_num_workers: 2
+  save_steps: 2000
+  save_full_states_for_resume: true
+  keep_last_k_ckpts: 2
   output_path: outputs/structwam_checkpoints
+
+dataloader:
+  dataset_dir: /home/ma-user/work/2337888765/workspace/datasets/openwam/libero
+
+model:
+  architecture:
+    structure:
+      log_every: 1  # auxiliary losses from rank 0 on every forward pass
 
 project:
   name: structwam

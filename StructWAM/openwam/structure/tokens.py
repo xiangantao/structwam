@@ -5,7 +5,9 @@ Per camera: 64 map tokens (student maps, 4x4 patches of the 32x32 grid), 32 keyp
 attention pool over all 17 time steps), and one token per selected instruction word (its UMT5
 embedding plus its attention concentration) — the word's map is among the map channels, so the
 expert can tie "bowl" / "plate" to where each points without any grammar.  A missing camera or
-an unselected word keeps its slots, masked out, so the sequence length is fixed.
+an unselected word keeps its slots, masked out, so the sequence length is fixed.  ``groups``
+selects which groups are emitted (all four by default); a left-out group has no tokens, and
+its parameters stay in place so checkpoints load either way.
 """
 
 from typing import Sequence
@@ -27,9 +29,13 @@ GROUPS = ("map", "keypoint", "trunk", "word")
 
 class StructureTokenizer(nn.Module):
     def __init__(self, dim: int, cameras: Sequence[str] = ("head", "wrist"), map_channels: int = 37,
-                 word_slots: int = 5):
+                 word_slots: int = 5, groups: Sequence[str] = GROUPS):
         super().__init__()
         self.cameras = tuple(cameras)
+        unknown = set(groups) - set(GROUPS)
+        if unknown or not groups:
+            raise ValueError(f"structure token groups must be a non-empty subset of {GROUPS}, got {list(groups)}")
+        self.groups = tuple(g for g in GROUPS if g in groups)
         self.map_norm = nn.GroupNorm(map_channels, map_channels)
         self.map_embed = nn.Conv2d(map_channels, dim, MAP_PATCH, MAP_PATCH)
         self.keypoint_embed = nn.Sequential(nn.LayerNorm(TOKEN_DIM), nn.Linear(TOKEN_DIM, dim), nn.SiLU(),
@@ -48,6 +54,7 @@ class StructureTokenizer(nn.Module):
             nn.init.normal_(parameter, std=0.02)
         self.counts = {"map": grid * grid, "keypoint": KEYPOINTS, "trunk": TRUNK_POOL * TRUNK_POOL,
                        "word": int(word_slots)}
+        self.counts = {g: (n if g in self.groups else 0) for g, n in self.counts.items()}
 
     @property
     def tokens_per_camera(self) -> int:

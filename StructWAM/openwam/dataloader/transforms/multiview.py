@@ -19,6 +19,38 @@ from PIL import Image
 # ``camera_layout`` and should mirror this list byte-for-byte.
 DEFAULT_MULTIVIEW_CAMERA_LAYOUT = ("head_camera", "left_camera", "right_camera")
 
+# Canvas modes: "lshape" (default; top camera over two bottom halves) or "side_by_side" (the first two
+# layout cameras left | right at equal size, H x W/2 each; the third slot must be empty).
+CANVAS_LAYOUTS = ("lshape", "side_by_side")
+
+
+def canvas_slot_size(mode: str, out_h: int, out_w: int, slot: int, top_height_ratio: float = 2.0 / 3.0):
+    """(height, width) a camera is resized to in canvas slot 0 / 1 / 2."""
+    if mode == "side_by_side":
+        if slot > 1:
+            raise ValueError("side_by_side canvases have two slots")
+        return out_h, (out_w // 2 if slot == 0 else out_w - out_w // 2)
+    if mode != "lshape":
+        raise ValueError(f"canvas mode must be one of {CANVAS_LAYOUTS}, got {mode!r}")
+    top_h = int(round(out_h * top_height_ratio))
+    return (top_h, out_w) if slot == 0 else (out_h - top_h, out_w // 2 if slot == 1 else out_w - out_w // 2)
+
+
+def _assemble_side_by_side(frames_by_camera: dict, camera_layout: list, out_h: int, out_w: int,
+                           return_missing_mask: bool):
+    if camera_layout[2] is not None and frames_by_camera.get(camera_layout[2]) is not None:
+        raise ValueError("side_by_side canvas has no third slot; set camera_layout[2] to null")
+    canvas = Image.new("RGB", (out_w, out_h), (0, 0, 0))
+    missing_mask = Image.new("L", (out_w, out_h), 0) if return_missing_mask else None
+    left_w = out_w // 2
+    for slot, x0, x1 in ((0, 0, left_w), (1, left_w, out_w)):
+        frame = frames_by_camera.get(camera_layout[slot])
+        if frame is not None:
+            canvas.paste(_stretch_resize(frame, out_h, x1 - x0), (x0, 0))
+        elif missing_mask is not None:
+            missing_mask.paste(255, (x0, 0, x1, out_h))
+    return (canvas, missing_mask) if return_missing_mask else canvas
+
 
 def crop_and_resize(image: Image.Image, target_height: int, target_width: int) -> Image.Image:
     """Center-crop and resize an image to ``(target_width, target_height)``.
@@ -52,6 +84,7 @@ def assemble_multiview_layout(
     out_w: int,
     top_height_ratio: float = 2.0 / 3.0,
     return_missing_mask: bool = False,
+    mode: str = "lshape",
 ) -> Union[Image.Image, Tuple[Image.Image, Image.Image]]:
     """3-camera L-shape composition (FastWAM / RoboTwin compatible).
 
@@ -81,6 +114,10 @@ def assemble_multiview_layout(
     """
     if len(camera_layout) != 3:
         raise ValueError(f"multiview layout expects 3 cameras, got {len(camera_layout)}: {camera_layout}")
+    if mode == "side_by_side":
+        return _assemble_side_by_side(frames_by_camera, camera_layout, out_h, out_w, return_missing_mask)
+    if mode != "lshape":
+        raise ValueError(f"canvas mode must be one of {CANVAS_LAYOUTS}, got {mode!r}")
 
     top_h = int(round(out_h * top_height_ratio))
     bottom_h = out_h - top_h

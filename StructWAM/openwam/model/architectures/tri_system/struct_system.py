@@ -8,6 +8,9 @@ structure stream ("geometry for the easy part, imagination for the hard part"):
 * phase gate        — predicts contact phase; routes the action stream's attention towards
   structure far from contact and towards the video (wrist tile) near contact.
 * sketch head       — structure-only action chunk; warm-starts the action denoiser.
+* video-free rows   — opt-in (``structure.action_video_dropout`` while training,
+  ``inference.structure_only_action`` at inference): action and structure rows without
+  video keys, so the action has to come from the structure stream.
 * video stream      — supervised in latent space only, with a structure-weighted and
   difficulty-weighted loss, track consistency, and REPA-style alignment to the student trunk;
   at inference it takes 1-2 denoising steps (more near contact) and is never decoded.
@@ -39,6 +42,7 @@ from openwam.structure.phase import PhaseGate
 from openwam.structure.routing import RoutingBias
 from openwam.structure.sketch import SketchHead, masked_action_mse, shape_schedule, warm_start
 from openwam.structure.student import StructureStudent, StudentConfig, map_channel_names, word_slots
+from openwam.structure.tokens import GROUPS
 
 logger = logging.getLogger(__name__)
 
@@ -94,8 +98,8 @@ class TriSystemStructArchitecture(BaseWAMArchitecture):
         self._student = None
         self._saliency_channels = None
         self._loss_calls = 0
-        self.layout = CanvasLayout()
         structure = _as_dict(_cfg_get(cfg, "structure", {}))
+        self.layout = CanvasLayout.for_mode(str(structure.get("canvas_layout", "lshape")))
         self.structure_cfg = structure
         self.loss_cfg = _as_dict(structure.get("losses", {}))
         self.inference_cfg = _as_dict(structure.get("inference", {}))
@@ -115,7 +119,8 @@ class TriSystemStructArchitecture(BaseWAMArchitecture):
             StructureExpertConfig(dim=int(expert_cfg.get("dim", 512)), ffn_dim=int(expert_cfg.get("ffn_dim", 2048)),
                                   num_layers=vb.num_layers, eps=float(expert_cfg.get("eps", 1e-5)), cameras=cameras,
                                   map_channels=len(map_channel_names(self.student_cfg)),
-                                  word_slots=word_slots(self.student_cfg)),
+                                  word_slots=word_slots(self.student_cfg),
+                                  groups=tuple(expert_cfg.get("groups", GROUPS))),
             wan_dim=vb.dim,
             wan_num_heads=vb.num_heads,
         )
@@ -155,7 +160,7 @@ class TriSystemStructArchitecture(BaseWAMArchitecture):
             "attention_mask_mode": str(_cfg_get(cfg, "attention_mask_mode", ACTION_SEES_VIDEO)),
             "video_attention_mask_mode": str(_cfg_get(cfg, "video_attention_mask_mode", "first_frame_causal")),
             "structure_reads_video": bool(structure.get("structure_reads_video", True)),
-            "video_detach": tuple(structure.get("video_detach", ("structure",))),
+            "video_detach": tuple(structure.get("video_detach", ())),
             "align_layer": None if float(self.loss_cfg.get("lambda_align", 0.0)) == 0 else int(self.align_layer),
         }
         self.build_driver()
@@ -201,6 +206,7 @@ class TriSystemStructArchitecture(BaseWAMArchitecture):
         if "wrist" not in self.cameras:
             return None
         frames, height, width = int(vstate.grid_frames), int(vstate.grid_height), int(vstate.grid_width)
+        self.layout.check_grid(height, width)
         region = self.layout.region_mask("wrist", height, width, device=self.device).flatten()
         return region.repeat(frames)
 
@@ -223,6 +229,20 @@ class TriSystemStructArchitecture(BaseWAMArchitecture):
         return inputs
 
     # ----- forward --------------------------------------------------------------
+
+    def _video_drop(self, batch: int, device) -> Optional[Tensor]:
+        """Samples whose action and structure rows see no video keys: each with probability
+        ``structure.action_video_dropout`` while training, all of them at inference when
+        ``inference.structure_only_action``; ``None`` otherwise (no random draw, masks unchanged)."""
+        if self.training:
+            p = float(self.structure_cfg.get("action_video_dropout", 0.0))
+        else:
+            p = 1.0 if self.inference_cfg.get("structure_only_action", False) else 0.0
+        if p <= 0:
+            return None
+        if p >= 1:
+            return torch.ones(batch, dtype=torch.bool, device=device)
+        return torch.rand(batch, device=device) < p
 
     def _gate(self, pooled: Tensor, proprio: Optional[Tensor], phase_target: Optional[Tensor]) -> Tuple[Tensor, Tensor]:
         logit = self.phase_gate(pooled, proprio)
@@ -281,7 +301,8 @@ class TriSystemStructArchitecture(BaseWAMArchitecture):
         sstate = sb.prepare_state(structure, batch=batch, dtype=vstate.hidden_states.dtype)
         logit, gate = self._gate(sstate.pooled, raw_proprio, phase_target)
         driver = self._driver or self.build_driver()
-        driver.set_forward_context(gate if self.routing is not None else None, self._wrist_video_tokens(vstate))
+        driver.set_forward_context(gate if self.routing is not None else None, self._wrist_video_tokens(vstate),
+                                   video_drop=self._video_drop(batch, gate.device))
         vstate, astate, sstate = driver.run_joint_loop(
             vstate,
             astate,

@@ -191,9 +191,13 @@ class LiberoDataset(LeRobotV3Reader):
 
     def _post_init(self, info: dict) -> None:
         features = info.get("features", {}) or {}
-        expected_size = (384, 320) if self._multiview else (256, 320)
+        if self._multiview and self._canvas_layout == "side_by_side":
+            # head | wrist at equal size: each camera keeps its square 1:1 frame (e.g. 256x512).
+            expected_size = (self._height, 2 * self._height)
+        else:
+            expected_size = (384, 320) if self._multiview else (256, 320)
         if (self._height, self._width) != expected_size:
-            mode = "multiview" if self._multiview else "single-view"
+            mode = ("multiview " + self._canvas_layout) if self._multiview else "single-view"
             raise ValueError(
                 f"LIBERO {mode} requires height={expected_size[0]}, width={expected_size[1]}, "
                 f"got height={self._height}, width={self._width}"

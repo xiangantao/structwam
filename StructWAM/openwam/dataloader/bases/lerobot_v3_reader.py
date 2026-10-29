@@ -70,7 +70,7 @@ import pyarrow.parquet as pq
 import torch
 
 from openwam.dataloader.bases.dataset import BaseDataset
-from openwam.dataloader.transforms.multiview import assemble_multiview_layout
+from openwam.dataloader.transforms.multiview import CANVAS_LAYOUTS, assemble_multiview_layout, canvas_slot_size
 from openwam.dataloader.transforms.video import VideoColorJitter, color_jitter_enabled
 from openwam.dataloader.utils.eef import (
     EEF_DIM,
@@ -187,6 +187,8 @@ class LeRobotV3Reader(BaseDataset):
         dataset_id: Optional[str] = None,
         target_camera: Optional[str] = None,
         camera_layout: Optional[List[str]] = None,
+        # Multiview canvas: "lshape" (default) or "side_by_side" (head | wrist, H x W/2 each).
+        canvas_layout: str = "lshape",
         # Octo-style head-view sampling: a list of >=2 camera keys (must include
         # the resolved head camera). Each TRAIN window decodes the head slot from
         # ONE uniformly sampled entry — viewpoint augmentation at unchanged window
@@ -225,6 +227,9 @@ class LeRobotV3Reader(BaseDataset):
         )
         self._target_camera = target_camera
         self._camera_layout_param = list(camera_layout) if camera_layout else None
+        if canvas_layout not in CANVAS_LAYOUTS:
+            raise ValueError(f"canvas_layout must be one of {CANVAS_LAYOUTS}, got {canvas_layout!r}")
+        self._canvas_layout = canvas_layout
         self._max_hours = max_hours
         self._subsample_seed = int(subsample_seed)
 
@@ -1069,6 +1074,7 @@ class LeRobotV3Reader(BaseDataset):
                 out_h=self._height,
                 out_w=self._width,
                 return_missing_mask=return_missing_masks,
+                mode=self._canvas_layout,
             )
             if return_missing_masks:
                 frame, missing_mask = assembled
@@ -1098,7 +1104,12 @@ class LeRobotV3Reader(BaseDataset):
             )
             v_base = int(self._ep_video_frame_offsets[camera][ep_local]) + offset
             frame_indices = (real_local_indices + v_base).tolist()
-            h, w = (_HEAD_SLOT_H, _HEAD_SLOT_W) if self._multiview else (self._height, self._width)
+            if not self._multiview:
+                h, w = self._height, self._width
+            elif self._canvas_layout == "lshape":
+                h, w = _HEAD_SLOT_H, _HEAD_SLOT_W
+            else:
+                h, w = canvas_slot_size(self._canvas_layout, self._height, self._width, 0)
             return _decode_video_frames(str(path), frame_indices, h, w)
 
         # wrist: tolerated decode — path/offset computation lives INSIDE the try so a
@@ -1110,7 +1121,9 @@ class LeRobotV3Reader(BaseDataset):
             )
             v_base = int(self._ep_video_frame_offsets[camera][ep_local]) + offset
             frame_indices = (real_local_indices + v_base).tolist()
-            return _decode_video_frames(str(path), frame_indices, _WRIST_SLOT_H, _WRIST_SLOT_W)
+            h, w = ((_WRIST_SLOT_H, _WRIST_SLOT_W) if self._canvas_layout == "lshape"
+                    else canvas_slot_size(self._canvas_layout, self._height, self._width, 1))
+            return _decode_video_frames(str(path), frame_indices, h, w)
         except self.WRIST_DECODE_TOLERATED as e:
             self._wrist_fail_count += 1
             if self._wrist_fail_count == 1 or self._wrist_fail_count % self._fail_log_every == 0:
@@ -1147,6 +1160,7 @@ class LeRobotV3Reader(BaseDataset):
         "normalize_mode",
         "target_camera",
         "camera_layout",
+        "canvas_layout",
         "head_camera_choices",
         "unify_action",
         "unify_action_map",
