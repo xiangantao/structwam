@@ -1,0 +1,18 @@
+# Cosmos-Predict2.5-2B, robot post-trained weights (StructWAM default video stream).
+# Same backbone code as cosmos_predict25_2b (name must stay cosmos_predict25_2b); only the
+# checkpoint variant differs.  robot/action-cond is single-view manipulation; the alternative
+# robot/multiview-agibot expects AgiBot's multiview layout.  Requires the cosmos_predict25 extra
+# (third_party/cosmos-predict2.5 submodule + scripts/install_cosmos_predict25.sh).
+
+name: cosmos_predict25_2b
+model_path: /home/ma-user/work/2337888765/workspace/models/Cosmos-Predict2.5-2B          # [Required] bundle root (download first)
+model_variant: robot/action-cond                      # robot/action-cond | robot/multiview-agibot
+
+# Cosmos-Reason1-7B, run inline as the live text encoder (training only).
+text_encoder_path: /home/ma-user/work/2337888765/workspace/models/Cosmos-Reason1-7B      # [Required] (download first)
+
+text_encoder_dropout: 0.0
+vae: wan2pt1
+shift_video: 5.0
+atten_backend: torch   # transformer_engine is CUDA-only; torch SDPA on Ascend (TE shim via cosmos_predict25/npu_compat.py)
+fp32_strategy: true    # upstream use_wan_fp32_strategy: time embedding / AdaLN / final layer in float32 (no autocast needed)

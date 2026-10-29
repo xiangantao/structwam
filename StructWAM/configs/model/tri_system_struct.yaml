@@ -1,0 +1,80 @@
+# StructWAM: video DiT (Cosmos-Predict2.5 robot) + ActionDiT + VACE-student structure expert.
+# Geometry for the easy part, imagination for the hard part: the action stream follows the
+# structure far from contact and the video stream (wrist tile) near contact; the video stream
+# is trained in latent space only and takes 1-2 steps at inference, never decoded.
+
+defaults:
+  - video_backbone: cosmos_predict25_2b_robot
+  - action_backbone: separate_action_dit
+  - _self_
+
+# The structure student is never an nn.Module child (frozen, not checkpointed); only the
+# pretrained text encoder / VAE are frozen here.  structure_expert must stay trainable.
+freeze:
+  - video_backbone.text_encoder
+  - video_backbone.reason1
+  - video_backbone.vae
+  - video_backbone.image_encoder
+  - video_backbone.video_encoder
+
+architecture:
+  framework: tri_system
+  variant: struct_expert
+
+  action_dim: 80
+  use_proprioception: true
+  state_dim: 80
+
+  # Video<->action visibility; structure always reads video, never action.
+  attention_mask_mode: mutual
+  video_attention_mask_mode: first_frame_causal
+  bridge_layers: null
+  bridge_interval: 1
+  mot_checkpoint_mixed_attn: true
+
+  structure_expert:
+    dim: 512
+    ffn_dim: 2048
+    eps: 1.0e-5
+
+  structure:
+    cameras: [head, wrist]
+    horizon: 32                    # = dataloader.num_frames - 1
+    structure_reads_video: true
+    # Video reads these streams without its losses training them (forward unchanged).  With only
+    # structure, the video loss can still reach the structure expert through the action tokens;
+    # [structure, action] closes that too (the video loss then stops training the action stream).
+    video_detach: [structure]
+    align_layer: null              # null = middle video layer
+    gate_teacher_forcing: 0.5      # prob. of routing with the demo phase label instead of the prediction
+    log_every: 50                  # structure loss terms -> training log (rank 0)
+
+    student:
+      latent_policy_root: /home/ma-user/work/2337888765/workspace/heft/latent_policy
+      checkpoint: /home/ma-user/work/2337888765/workspace/runs/mainline_20261016/g2_full/step_0002000.pt
+      roles: null                  # null = word mode (no grammar): up to 5 most concentrated instruction words
+      text_root: null              # UMT5 for instructions outside the student's text cache; null = from the checkpoint
+      appearance_stats: /home/ma-user/work/2337888765/workspace/runs/dp_stacked_20261018/maps/stats.npz
+      history: 33
+      image_size: 256
+      workers: 8
+
+    routing:
+      enabled: true
+      init_structure: 1.0
+      init_video: 1.0
+      init_wrist: 0.5
+
+    losses:
+      video_saliency: 2.0          # per-pixel video-loss weight 1 + s * structure saliency (mean-normalized)
+      difficulty: [1.0, 0.5, 0.0]  # per-sample: near contact, unsure tracks, structure-only sketch error (off)
+      lambda_phase: 0.1
+      lambda_sketch: 0.0           # sketch head off (kept for the structure-only ablation)
+      lambda_align: 0.5
+      lambda_track: 0.1
+
+    inference:
+      near_threshold: 0.5
+      video_steps_far: 1
+      video_steps_near: 2
+      sketch_start_t: null         # sketch warm start off; 600 = start action denoising from the noised sketch

@@ -1,0 +1,14 @@
+# StructWAM training entry:  bash scripts/train.sh --config-name train_struct [overrides]
+defaults:
+  - train
+  - override model: tri_system_struct
+  - override dataloader: libero_struct
+  - _self_
+
+training:
+  batch_size: 4                    # per device; the structure student also runs on each device
+  dataset_num_workers: 8
+  output_path: outputs/structwam_checkpoints
+
+project:
+  name: structwam
