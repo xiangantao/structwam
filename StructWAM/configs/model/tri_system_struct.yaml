@@ -81,4 +81,6 @@ architecture:
       video_steps_far: 1
       video_steps_near: 2
       sketch_start_t: null         # sketch warm start off; 600 = start action denoising from the noised sketch
+      video_kv_cache: false        # true: once the video freezes, one forward keeps its (and the structure) K/V; later action steps run the action expert alone
+      log_timing: false            # true: log student / denoising wall time per generate ([STRUCT_TIMING])
     structure_only_action: false # true: action + structure rows see no video keys at inference

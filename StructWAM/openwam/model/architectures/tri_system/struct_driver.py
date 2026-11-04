@@ -17,6 +17,11 @@
 5. Video-free rows (opt-in, ``set_forward_context(video_drop=...)``): for the marked samples
    the action rows *and* the structure rows get no video keys, so the action comes from the
    structure tokens, proprio and text alone (structure rows would otherwise relay the video).
+6. K/V reuse at inference (opt-in, ``arm_kv_capture`` / ``run_action_only``): once the video
+   stream is frozen, one full forward keeps every layer's K/V, and the remaining action steps
+   run the action rows alone against those video / structure keys.  Exact for the structure
+   rows (they never read action) up to their video keys; under the ``mutual`` mask the cached
+   future-frame video rows keep the action tokens of the captured forward.
 
 The joint attention is computed per row group — video, action, structure — each with its own
 mask rows and K/V: the forward values equal one masked attention over the whole sequence, but
@@ -51,6 +56,8 @@ class StructMoTDriver(TriSystemMoTDriver):
         self._wrist_video: Optional[Tensor] = None
         self._video_drop: Optional[Tensor] = None
         self.captured_hidden: Optional[Tensor] = None
+        self._kv_capture: Optional[list] = None
+        self._kv_cache: Optional[list] = None
 
     def set_forward_context(self, gate: Optional[Tensor], wrist_video: Optional[Tensor] = None,
                             video_drop: Optional[Tensor] = None) -> None:
@@ -111,6 +118,8 @@ class StructMoTDriver(TriSystemMoTDriver):
         return next(self.vb.parameters()).dtype
 
     def _mixed_attention(self, q_cat: Tensor, k_cat: Tensor, v_cat: Tensor, attn_mask: Optional[Tensor]) -> Tensor:
+        if self._kv_capture is not None:
+            self._kv_capture.append((k_cat, v_cat, attn_mask))
         detach = self.video_detach and torch.is_grad_enabled()
         if self._sizes is None or (self._action_mask is None and not detach):
             return super()._mixed_attention(q_cat, k_cat, v_cat, attn_mask)
@@ -162,6 +171,43 @@ class StructMoTDriver(TriSystemMoTDriver):
         if self.align_layer is not None and layer_id == self.align_layer:
             self.captured_hidden = vstate.hidden_states
         return vstate, astate, ustate
+
+    # ----- K/V reuse at inference ---------------------------------------------------
+
+    def arm_kv_capture(self) -> None:
+        """Keep every layer's joint K/V and mask from the next ``run_joint_loop``."""
+        self._kv_capture, self._kv_cache = [], None
+
+    def finish_kv_capture(self) -> None:
+        if self._kv_capture is not None:
+            self._kv_cache, self._kv_capture = self._kv_capture, None
+
+    def clear_kv_cache(self) -> None:
+        self._kv_capture = self._kv_cache = None
+
+    @torch.no_grad()
+    def run_action_only(self, astate):
+        """Run the action rows alone through every layer, against the video / structure K/V kept
+        by the last captured forward plus this forward's own action K/V; the video and structure
+        streams are not computed.  The action-row mask (routing bias included) is the captured one."""
+        if not self._kv_cache:
+            raise RuntimeError("run_action_only needs a captured forward (arm_kv_capture, then run_joint_loop)")
+        s_video, s_action, s_structure = self._sizes
+        for layer_id, (k_cat, v_cat, attn_mask) in enumerate(self._kv_cache):
+            q_a, k_a, v_a, apost = self.ab.pre_attn_at_layer(layer_id, astate)
+            if q_a.shape[1] != s_action:
+                raise RuntimeError(f"action length {q_a.shape[1]} differs from the captured forward's {s_action}")
+            k_video = k_cat.shape[1] - s_action - s_structure
+            k = torch.cat([k_cat[:, :k_video], k_a, k_cat[:, k_video + s_action :]], 1)
+            v = torch.cat([v_cat[:, :k_video], v_a, v_cat[:, k_video + s_action :]], 1)
+            if self._action_mask is not None:
+                prefix = k_video - s_video
+                mask = F.pad(self._action_mask, (prefix, 0)) if prefix > 0 else self._action_mask
+            else:
+                mask = None if attn_mask is None else attn_mask[..., s_video : s_video + s_action, :]
+            out = TriSystemMoTDriver._mixed_attention(self, q_a, k, v, mask)
+            astate = self.ab.post_attn_at_layer(layer_id, astate, out.contiguous(), apost)
+        return astate
 
 
 __all__ = ["StructMoTDriver"]

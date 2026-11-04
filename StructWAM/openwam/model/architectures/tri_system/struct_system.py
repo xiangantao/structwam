@@ -13,7 +13,9 @@ structure stream ("geometry for the easy part, imagination for the hard part"):
   video keys, so the action has to come from the structure stream.
 * video stream      — supervised in latent space only, with a structure-weighted and
   difficulty-weighted loss, track consistency, and REPA-style alignment to the student trunk;
-  at inference it takes 1-2 denoising steps (more near contact) and is never decoded.
+  at inference it takes 1-2 denoising steps (more near contact) and is never decoded.  With
+  ``inference.video_kv_cache`` the frozen video and structure K/V are computed by one forward
+  and the remaining action steps run the action expert alone.
 
 Training-only inputs (prepared in ``prepare_inputs``): ``structure`` (student features per
 camera) and ``phase_target``.  Deploy inputs: ``structure_frames`` (raw frame history kept by
@@ -21,6 +23,7 @@ camera) and ``phase_target``.  Deploy inputs: ``structure_frames`` (raw frame hi
 """
 
 import logging
+import time
 from typing import Optional, Tuple
 
 import numpy as np
@@ -79,6 +82,14 @@ def _match_batch(features: dict, batch: int) -> dict:
     return out
 
 
+def _synced_time(device) -> float:
+    """Wall clock after the device queue drains (NPU / CUDA kernels run asynchronously)."""
+    sync = getattr(getattr(torch, torch.device(device).type, None), "synchronize", None)
+    if sync is not None:
+        sync()
+    return time.perf_counter()
+
+
 @register_architecture(
     "tri_system_struct",
     status="supported",
@@ -93,6 +104,7 @@ class TriSystemStructArchitecture(BaseWAMArchitecture):
         super().__init__(cfg)
         self.structure_expert = None
         self._driver = None
+        self._kv_plan: Optional[dict] = None
         self._aux: dict = {}
         self._loss_context: dict = {}
         self._student = None
@@ -276,6 +288,19 @@ class TriSystemStructArchitecture(BaseWAMArchitecture):
             action_context_mask = positions.unsqueeze(0) < seq_lens.unsqueeze(1)
         pipeline_inputs.setdefault("force_per_token_t_mod", True)
         pipeline_inputs.setdefault("zero_clean_prefix_t_mod", True)
+        plan = None if self.training else self._kv_plan
+        if plan is not None and noisy_actions is not None and ab is not None:
+            call = plan["calls"]
+            plan["calls"] += 1
+            if call > plan["capture"]:
+                # Video frozen and already captured: only the action expert runs.
+                astate = ab.prepare_state(noisy_actions, action_timestep, context=action_context,
+                                          context_mask=action_context_mask)
+                plan["action_only"] += 1
+                return None, ab.extract_prediction(self._driver.run_action_only(astate))
+            if call == plan["capture"]:
+                self._driver.arm_kv_capture()
+            plan["full"] += 1
         vstate = vb.prepare(
             use_gradient_checkpointing=use_gradient_checkpointing,
             use_gradient_checkpointing_offload=use_gradient_checkpointing_offload,
@@ -310,6 +335,8 @@ class TriSystemStructArchitecture(BaseWAMArchitecture):
             use_gradient_checkpointing=use_gradient_checkpointing,
             use_gradient_checkpointing_offload=use_gradient_checkpointing_offload,
         )
+        if plan is not None:
+            driver.finish_kv_capture()
         self._aux = {
             "gate_logit": logit,
             "phase_target": phase_target,
@@ -416,6 +443,25 @@ class TriSystemStructArchitecture(BaseWAMArchitecture):
 
     # ----- inference --------------------------------------------------------------
 
+    def _video_kv_plan(self, shaped, video_steps: int, kwargs: dict) -> Optional[dict]:
+        """Forward-call bookkeeping for ``inference.video_kv_cache``.
+
+        The base loop calls ``forward`` once per schedule entry where either stream moves; from
+        entry ``video_steps`` on the video is frozen.  The first such call is a full forward whose
+        K/V are kept, every later call runs the action rows alone.  ``None`` (plain forwards) when
+        the cache is off, nothing would be reused, or the DiT cache / CFG change the call count.
+        """
+        if not self.inference_cfg.get("video_kv_cache", False):
+            return None
+        if kwargs.get("dit_cache") is not None or float(kwargs.get("cfg_scale", 1.0)) > 1.0:
+            logger.warning("video_kv_cache skipped: it needs dit_cache=None and cfg_scale=1")
+            return None
+        calls = [i for i in range(len(shaped) - 1) if shaped[i] != shaped[i + 1]]
+        capture = next((k for k, i in enumerate(calls) if i >= video_steps), None)
+        if capture is None or capture == len(calls) - 1:
+            return None
+        return {"capture": capture, "calls": 0, "full": 0, "action_only": 0}
+
     @torch.no_grad()
     def generate(self, schedule, prompt: str, *, structure_frames: Optional[dict] = None,
                  proprio: Optional[Tensor] = None, num_frames: int = 49, action_num_frames: Optional[int] = None,
@@ -423,9 +469,12 @@ class TriSystemStructArchitecture(BaseWAMArchitecture):
         if structure_frames is None:
             raise ValueError("tri_system_struct.generate needs `structure_frames` (WAMPolicy keeps the history)")
         self.eval()
+        timing = bool(self.inference_cfg.get("log_timing", False))
+        t_start = _synced_time(self.device) if timing else 0.0
         frames = {camera: torch.from_numpy(np.asarray(clip))[None] for camera, clip in structure_frames.items()
                   if camera in self.cameras}
         features = self.student.encode(frames, [prompt])
+        t_student = _synced_time(self.device) if timing else 0.0
         state_proprio = torch.as_tensor(proprio).reshape(1, -1).to(self.device, self.dtype) if proprio is not None \
             else None
         pooled = self.structure_expert.tokenizer(features, 1, dtype=self.dtype)["pooled"]
@@ -443,11 +492,26 @@ class TriSystemStructArchitecture(BaseWAMArchitecture):
             generator = torch.Generator(device=self.device).manual_seed(seed)
             initial = warm_start(sketch.to(self.dtype), self.action_scheduler, shaped[0][1], generator)
         kwargs.pop("decode_video", None)
-        result = super().generate(shaped, prompt, num_frames=num_frames, action_num_frames=action_num_frames,
-                                  seed=seed, proprio=proprio, initial_action_latents=initial, decode_video=False,
-                                  structure=features, **kwargs)
+        self._kv_plan = self._video_kv_plan(shaped, video_steps, kwargs)
+        try:
+            result = super().generate(shaped, prompt, num_frames=num_frames, action_num_frames=action_num_frames,
+                                      seed=seed, proprio=proprio, initial_action_latents=initial, decode_video=False,
+                                      structure=features, **kwargs)
+        finally:
+            plan, self._kv_plan = self._kv_plan, None
+            self._driver.clear_kv_cache()
         result["structure_gate"] = gate
         result["video_steps"] = video_steps
+        if timing:
+            t_end = _synced_time(self.device)
+            if plan is not None:
+                full, action_only = plan["full"], plan["action_only"]
+            else:
+                full, action_only = sum(1 for i in range(len(shaped) - 1) if shaped[i] != shaped[i + 1]), 0
+            result["timing"] = {"student_s": t_student - t_start, "denoise_s": t_end - t_student,
+                                "full_forwards": full, "action_only_forwards": action_only}
+            logger.info("[STRUCT_TIMING] student %.3fs, rest %.3fs: %d full + %d action-only forwards, video_steps %d",
+                        t_student - t_start, t_end - t_student, full, action_only, video_steps)
         return result
 
 
