@@ -5,11 +5,11 @@
 # (third_party/cosmos-predict2.5 submodule + scripts/install_cosmos_predict25.sh).
 
 name: cosmos_predict25_2b
-model_path: /home/ma-user/work/2337888765/workspace/models/Cosmos-Predict2.5-2B          # [Required] bundle root (download first)
+model_path: ${oc.env:STRUCTWAM_ASSETS}/models/Cosmos-Predict2.5-2B          # [Required] bundle root (download first)
 model_variant: robot/action-cond                      # robot/action-cond | robot/multiview-agibot
 
 # Cosmos-Reason1-7B, run inline as the live text encoder (training only).
-text_encoder_path: /home/ma-user/work/2337888765/workspace/models/Cosmos-Reason1-7B      # [Required] (download first)
+text_encoder_path: ${oc.env:STRUCTWAM_ASSETS}/models/Cosmos-Reason1-7B      # [Required] (download first)
 
 text_encoder_dropout: 0.0
 vae: wan2pt1

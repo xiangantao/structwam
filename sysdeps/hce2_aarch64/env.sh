@@ -2,8 +2,8 @@
 # ImageMagick (python wand, sensor-noise perturbations) and mesa-dri-drivers / llvm-libs (MuJoCo EGL
 # software rendering).  Copied from notebook 30232 (ImageMagick-7.1.2.29, mesa-dri-drivers-21.3.1,
 # llvm-libs-12.0.1, plus the libraries those need that the stock image does not ship).
-#   source /home/ma-user/work/2337888765/sysdeps/hce2_aarch64/env.sh
-SYSDEPS=/home/ma-user/work/2337888765/sysdeps/hce2_aarch64
+#   source sysdeps/hce2_aarch64/env.sh   (or set LIBERO_SYSDEPS_ENV to this file; see recipes/paths.sh)
+SYSDEPS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"  # the libraries sit next to this file (not in git)
 export LD_LIBRARY_PATH="$SYSDEPS/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export MAGICK_HOME="$SYSDEPS"
 export MAGICK_CODER_MODULE_PATH="$SYSDEPS/lib/ImageMagick-7.1.2/modules-Q16HDRI/coders"

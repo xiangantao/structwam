@@ -1166,7 +1166,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--replicas-per-gpu",
         type=int,
-        choices=(1, 2, 3),
+        choices=(1, 2, 3, 4, 5, 6),
         default=2,
         help="policy server/client replicas per GPU (default: 2; maximum: 3)",
     )

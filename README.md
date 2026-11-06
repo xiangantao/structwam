@@ -29,7 +29,7 @@
 
 | 分支 | 实现 | 内容 |
 |---|---|---|
-| 视频 | Cosmos-Predict2.5-2B（机器人后训练权重 `robot/action-cond`） | 只在潜空间里训练；推理时只去噪 1–2 步，从不解码 |
+| 视频 | Cosmos-Predict2.5-2B（机器人后训练权重 `robot/action-cond`） | 只在潜空间里训练；推理时只去噪 1 步，从不解码 |
 | 动作 | OpenWAM 的 ActionDiT | 32 步动作块，统一 80 维动作空间 |
 | 结构 | 冻结的 VACE 学生 + 可训练的结构专家 | 每个相机：64 个图 token、32 个关键点轨迹 token、16 个主干 token、最多 5 个词 token |
 
@@ -37,7 +37,7 @@
 
 ### 结构如何发挥作用
 
-1. **阶段门控（结构 → 动作）**：门控预测“这个动作块离接触有多近”，监督信号来自示范里的夹爪指令。它给动作 token 的注意力加偏置：离接触远时多看结构，接近接触时多看视频，尤其是腕部画面所在的区域。推理时，视频分支离接触远时去噪 1 步，近时 2 步。
+1. **阶段门控（结构 → 动作）**：门控预测“这个动作块离接触有多近”，监督信号来自示范里的夹爪指令。它给动作 token 的注意力加偏置：离接触远时多看结构，接近接触时多看视频，尤其是腕部画面所在的区域。推理时视频分支只去噪 1 步，之后的动作步复用缓存的视频 / 结构 K/V（见第 2 节）。
 2. **训练约束（结构 → 视频）**：
    - 视频损失按显著区域和样本难度（接近接触、轨迹没把握）加权；
    - 轨迹一致性：预测出的下一潜帧在学生轨迹指向的位置上，要和当前帧外观一致；
@@ -45,17 +45,20 @@
 3. **结构读视频（视频 → 结构）**：结构 token 可以读视频 token，用世界模型的知识修正远期轨迹。
 4. **视频损失也训练结构专家**：默认 `video_detach: []`。消融时可以设成 `[structure]`，切断这条梯度。
 
-**实际启用情况**（已评测的 s24000 / s40000 和正在跑的 a2、b2、b0、c0 都一样，除非另行注明）：
+**当前最佳配置 b2**（`StructWAM/configs/train_struct_b2.yaml`）启用的机制：
 
-| 机制 | 配置 | 状态 |
+| 机制 | 配置 | b2 |
 |---|---|---|
 | 阶段门控 + 注意力偏置 | `routing.enabled: true`，`lambda_phase: 0.1`，`gate_teacher_forcing: 0.5` | 开 |
 | 视频损失按显著区域加权 | `video_saliency: 2.0` | 开 |
 | 视频损失按样本难度加权 | `difficulty: [1.0, 0.5, 0.0]` | 接近接触、轨迹没把握两项开 |
-| 轨迹一致性 | `lambda_track: 0.1` | 开（a2、b2 为 0） |
+| 轨迹一致性 | `lambda_track` | **关**（0） |
 | REPA 式对齐 | `lambda_align: 0.5` | 开 |
 | 结构读视频 | `structure_reads_video: true` | 开 |
-| 视频损失训练结构专家 | `video_detach: []` | 开（a2、b2 为 `[structure]`） |
+| 视频损失训练结构专家 | `video_detach` | **关**（`[structure]`） |
+| 视频 dropout | `action_video_dropout` | **0.3**：训练时 30% 的样本，动作和结构 token 看不到视频 token |
+| 一致图像增强 | `dataloader.structure_augment.enabled` | **开**：头部旋转 ±4°、放大 1–1.2 倍、20% 概率轻微模糊；两个相机亮度 / 对比度 / 饱和度抖动；视频画布、首帧条件和学生的 33 帧历史用同一套变换 |
+| 推理：视频一步去噪 + K/V 缓存 | `inference.video_steps_far/near: 1`，`inference.video_kv_cache: true` | **开**（模型配置的默认值） |
 
 完整的设计和改动清单见 [`StructWAM/STRUCTWAM.md`](StructWAM/STRUCTWAM.md)。
 
@@ -74,135 +77,158 @@
 
 ### 评测协议（LIBERO-plus）
 
-- 按 task-sample-seed 42 抽取 10% 的任务，共 1005 个，每个任务跑 1 次。
-- 使用干净指令：去掉指令里的扰动编号。
-- 每个 episode 最多 600 个环境步（libero_10 为 700）。这比官方 LIBERO 的上限（220/280/300/520）宽松，所以下面的数字只适合内部比较；要和排行榜比，需要用官方上限重跑。
-- 模型之间用配对 McNemar 检验比较。
+- 用 OpenWAM 的 LIBERO-plus 评测代码（`StructWAM/benchmarks/libero-plus`），它在启动时固定并检查协议：每个任务 1 次，seed 10000，`rng_mode: official_global`，settle 30 步，每个 episode 最多 600 个环境步（libero_10 为 700）。OpenWAM 论文里 OpenWAM-α 的数字也是这套协议。
+- 使用干净指令：LIBERO-plus 的指令由 bddl 文件名生成，非语言类任务会带上扰动编号（如 “… table 18”），评测时去掉这些编号；语言扰动任务的指令保持原样（`recipes/eval/clean_instructions.py`）。
+- 动作去噪 10 步，每次规划执行 10 个动作，DiT 缓存关闭。
+- 测评是确定性的：同一检查点的两次测评里，同一个任务的成败完全一致（全量和 10% 抽样重叠的 1004 个任务全部一致）。
 
-### 主结果
+### 全量 LIBERO-plus（10030 个任务，b2 40k，视频 1 步 + K/V 缓存）
 
-| 模型 | 总成功率 |
-|---|---|
-| **StructWAM s40000** | **75.2%** |
-| OpenWAM-Cosmos 40k（同样的 Cosmos 视频骨架，同样训练 40k 步，不带结构） | 71.2% |
-| StructWAM s24000 | 69.1% |
+**总成功率 85.5%**（8573 / 10030）。逐任务结果：`results/libero_plus_full_b2_v1kv/<suite>/summary.csv`。
 
-StructWAM 40k 对 OpenWAM 40k：配对胜负 91/51，**p = 0.001**。
-
-| 扰动类别 | StructWAM | OpenWAM | p |
-|---|---|---|---|
-| 背景 | 69.4 | 57.5 | 0.011 |
-| 机器人初始位姿 | 92.3 | 81.5 | 0.004 |
-| 相机视角 | 43.3 | 37.6 | 0.14（不显著） |
-| 传感器噪声 | 58.5 | 57.4 | 不显著 |
-| 光照 | 93.8 | 96.4 | 略差，不显著 |
-| 语言 | 93.4 | 95.4 | 略差，不显著 |
-
-按任务套件看，StructWAM 在 goal 上 +7.7（p = 0.003），在 spatial 上 +5.4，在 libero_10 上和 OpenWAM 持平。相机视角和传感器噪声仍然是短板。
-
-### 诊断实验
-
-| 问题 | 做法 | 结论 |
-|---|---|---|
-| 结构专家主要被什么训练？ | 对 s40000 按每个损失项求梯度（`runs/structwam_grad_attr_20261027`） | 视频损失和轨迹一致性的梯度各约为动作损失的 10 倍，但方向几乎相反（后几层 qkv 的余弦约 −1），互相抵消；视频梯度 99% 走直接路径。这是做 `video_detach=[structure]` 消融的原因 |
-| 学生的结构在扰动下还靠谱吗？ | 在 167 个 LIBERO-plus 场景上测学生 K 分段的涌现分割质量（`runs/student_seg_robustness_20261027`） | kNN 纯度：头部 0.55–0.65、腕部 0.78，原始 V-JEPA2 只有约 0.2 / 0.29。换视角只降约 0.06，传感器噪声影响最大 |
-| latent 单独接到 DP 策略上有用吗？ | libero_spatial 闭环，RGB+latent 对比只用 RGB | 两组设置分别是 71.6 vs 71.2、56.0 vs 67.6，分布内没有增益 |
-| 能否用 latent 的状态转移在线校准动作？ | 离线检验 | R² 为 −17.7，不如直接重复上一个动作（0.19），已放弃 |
-| 视频 dropout 会不会拖慢正常路径？ | b0 的 10k 检查点上做配对测量（`runs/structwam_a123_tests_20261027/measure_dropout_loss.py`） | 看得到视频时 action loss 0.0268，和原版同步数的 0.0257 一样；看不到视频时 0.0429。训练日志 loss 偏高，完全是被遮住的那 30% 样本造成的 |
-
-### 进行中的消融（2026-10-27 起，各 40k 步，8 NPU）
-
-入口：`runs/structwam_a123_20261027/train_arm_modelarts.sh ARM`
-
-| 变体 | 视频损失训练结构专家 | 轨迹一致性 | 视频 dropout | 数据增强 | 画布 |
+| 扰动类别 | libero_spatial | libero_object | libero_goal | libero_10 | 合计 |
 |---|---|---|---|---|---|
-| 原版（已评测，75.2%） | 是 | 开 | — | — | L 形（头部 256×320，腕部 128×160） |
-| a2 | 否 | 关 | 0.3 | — | L 形 |
-| b2 | 否 | 关 | 0.3 | 默认 | L 形 |
-| b0 | 是 | 开 | 0.3 | 默认 | L 形 |
-| c0 | 是 | 开 | 0.3 | 对齐 π0.5 | 左右并排，256×512 |
+| 相机视角 | 68.1 | 72.5 | 65.4 | 52.5 | 64.4 |
+| 机器人初始状态 | 92.0 | 92.7 | 86.6 | 85.2 | 89.0 |
+| 语言指令 | 96.4 | 92.1 | 76.1 | 95.0 | 89.7 |
+| 光照 | 97.9 | 98.7 | 100.0 | 96.0 | 98.2 |
+| 背景纹理 | 89.5 | 92.7 | 78.3 | 65.1 | 80.8 |
+| 传感器噪声 | 94.6 | 92.2 | 91.0 | 88.6 | 91.4 |
+| 物体布局 | 96.9 | 89.8 | 71.3 | 93.9 | 87.3 |
+| **合计** | **90.6** | **89.6** | **80.3** | **81.8** | **85.5** |
 
-- **视频 dropout**：训练时 30% 的样本，动作和结构 token 看不到视频 token，迫使动作学会利用结构。推理时不启用。
-- **默认增强**：
-  - 头部：旋转 ±4°、放大 1–1.2 倍、20% 概率轻微模糊；
-  - 两个相机：亮度、对比度、饱和度抖动；
-  - 视频画布、首帧条件和学生的 33 帧历史用同一套变换。
-- **c0**：
-  - 画布：头部和腕部各 256×256 左右并排（原来的腕部只有 128×160）；
-  - 增强参数向 π0.5 / Cosmos-Policy 看齐：旋转 ±5°、裁剪约 90%、亮度 0.3 / 对比度 0.4 / 饱和度 0.5 / 色相 0.05，两个相机的颜色各自独立抽样。
-- `a1`（a2 去掉 dropout）和 `a3`（再去掉主干 token 组）在脚本里定义了，但还没跑。
+### 和其他方法比较
+
+OpenWAM 论文的 LIBERO-plus 表（`StructWAM/benchmarks/libero-plus/README.md` 第 4 节），列为相机 / 机器人 / 语言 / 光照 / 背景 / 噪声 / 布局 / 平均：
+
+| 方法 | 类型 | 相机 | 机器人 | 语言 | 光照 | 背景 | 噪声 | 布局 | 平均 |
+|---|---|---|---|---|---|---|---|---|---|
+| Qwen-RobotManip | VLA | 87.2 | 75.5 | 85.6 | 96.6 | 97.7 | 97.7 | 87.3 | 89.0 |
+| ACoT-VLA | VLA | 72.6 | 82.6 | 87.5 | 97.7 | 96.5 | 87.8 | 88.1 | 86.6 |
+| **StructWAM b2（本仓库）** | WAM | 64.4 | 89.0 | 89.7 | 98.2 | 80.8 | 91.4 | 87.3 | **85.5** |
+| π0.5 | VLA | 78.4 | 73.6 | 80.8 | 96.2 | 94.1 | 89.0 | 84.5 | 84.4 |
+| ABot-M0.5 | WAM | 70.5 | 87.4 | 88.6 | 94.0 | 89.7 | 75.5 | 85.2 | 83.4 |
+| ImageWAM | WAM | 80.8 | 50.3 | 91.4 | 98.1 | 85.5 | 93.8 | 80.5 | 83.1 |
+| Cosmos-Policy | WAM | 75.8 | 63.3 | 81.7 | 96.5 | 88.9 | 92.7 | 82.2 | 82.2 |
+| Being-H0.7 | WAM | 82.0 | 59.0 | 82.8 | 97.8 | 90.0 | 93.5 | 88.5 | 82.1 |
+| OpenVLA-OFT | VLA | 56.4 | 31.9 | 79.5 | 88.7 | 93.3 | 75.8 | 74.2 | 69.6 |
+| OpenWAM-α | WAM | 33.8 | 76.1 | 88.0 | 97.0 | 87.1 | 39.8 | 77.5 | 69.2 |
+| π0 | VLA | 13.8 | 6.0 | 58.8 | 85.0 | 81.4 | 79.0 | 68.9 | 53.6 |
+
+- 和 OpenWAM-α 是同一套评测代码和协议，高 16.3 个百分点。
+- 表里其他方法的数字取自各自论文，评测细节（步数上限、指令处理）不一定和我们一致，比较时要注意。LIBERO-plus 官方论文和 README 都没写每个 episode 的步数上限；要上排行榜，先核对 LIBERO-plus 自己的评测代码。
+- 强项是机器人初始状态（89.0，表里最高）和语言；短板是相机视角（64.4）和背景纹理（80.8），libero_10 和 goal 上尤其明显。
+
+### 配方是怎么选出来的（LIBERO-plus 10% 抽样，1005 个任务）
+
+早期消融都在 10% 抽样上比较（task-sample-seed 42），各 40k 步；“10/10”是视频和动作都去噪 10 步的旧推理设置。
+
+| 变体 | 视频损失训练结构专家 | 轨迹一致性 | 视频 dropout | 图像增强 | 抽样成功率 |
+|---|---|---|---|---|---|
+| OpenWAM-Cosmos 40k（不带结构） | — | — | — | — | 71.2 |
+| StructWAM 原版 | 是 | 开 | — | — | 75.2 |
+| a2 | 否 | 关 | 0.3 | — | 76.3 |
+| b0 | 是 | 开 | 0.3 | 默认 | 78.7 |
+| c0（左右并排画布 + π0.5 式增强） | 是 | 开 | 0.3 | π0.5 式 | 79.2 |
+| **b2**（10/10 推理） | 否 | 关 | 0.3 | 默认 | 80.5 |
+| **b2 + 视频 1 步 + K/V 缓存** | 否 | 关 | 0.3 | 默认 | **84.6**（对 b2 10/10 配对 74:33，p < 0.001） |
+
+视频只去噪 1 步不但快 1.7 倍，还更好：增益主要来自传感器噪声里的高斯模糊（92 vs 57）。一种解释是多步视频去噪会从被扰动的头部画面“想象”出错误的未来，把动作带偏；一步时动作更依赖当前帧、结构和腕部画面。
+
+细到“某个 suite 的某一类”，抽样每格只有 20–50 个任务，误差可达 ±10–18 个百分点（例如 object 相机：抽样 86.5，全量 72.5），只看总分和全量结果。
 
 ### 和其他工作比较时要注意
 
 - **Robust-WAM**：它的 LIBERO-plus 评测按策略调用次数计步，每次执行 8 个动作，实际允许的环境步数远多于我们的设置，数字不能直接比。
 - **OA-WAM**：用了仿真器的真值物体位姿。
 - **Cosmos-Policy**：训练样本量约是我们的 30 倍。
+- **OpenVLA-OFT+（LIBERO-plus 官方表 79.6）**：用 LIBERO-plus 扰动数据训练，属于见过测试分布的设定，要单独列。我们不使用任何扰动类训练数据。
 
 ---
 
-## 3. 后续计划（2026-10-29）
+## 3. 快速上手
 
-下一轮完整训练的基础配方，等 a2、b2、b0、c0 的 40k 评测结果再定：
-- 视频损失要不要切断：看 b2 对 b0；
-- 增强有没有用：看 b2 对 a2；
-- 并排画布好不好：看 c0 对 b0。
+所有入口都在 `recipes/`。下面以昇腾 NPU（aarch64，CANN 8.3–8.5）为例，所有结果都在 8×Ascend 910B3 上得到。
 
-学生重新蒸馏不依赖这些结果，可以先做。
+### 3.1 拉代码、配路径
 
-### 3.1 视频 dropout 调低
+```bash
+git clone https://github.com/xiangantao/structwam.git && cd structwam
+git submodule update --init StructWAM/third_party/cosmos-predict2.5
+cp recipes/paths.example.sh recipes/paths.local.sh   # 至少填 STRUCTWAM_ASSETS
+source recipes/paths.sh
+```
 
-- 10k 时，被遮住视频的样本 action loss 是 0.043，正常样本是 0.027；每个 batch 有 30% 花在这类难拟合的样本上。
-- 目前没有任何一组能单独看出 dropout 的效果：b0 同时加了 dropout 和增强，a1 一直没跑。所以 0.3 是有帮助还是有损害，现在还不知道。
-- 下一轮降到 0.1；资源够的话，再配一组 dropout 0 作对照，把 dropout 的作用单独分出来。
+仓库外的东西（模型、数据、检查点、评测输出）都放在 `$STRUCTWAM_ASSETS` 下，目录约定写在 `recipes/paths.sh` 开头。配置文件里的路径通过 `${oc.env:STRUCTWAM_ASSETS}` / `${oc.env:STRUCTWAM_REPO}` 读取，不用改。
 
-### 3.2 学生重新蒸馏，加图像增强
+### 3.2 环境
 
-teacher（Wan2.1-VACE）是在线计算的，没有缓存的目标；目前只有一项很弱的颜色和亮度增强一致性约束。在线 teacher 让加增强变得很简单：
+```bash
+bash recipes/env/setup_openwam_npu.sh    # 策略 / 训练环境：Python 3.11，torch 2.7.1 + torch_npu 2.7.1
+bash recipes/env/setup_libero_plus.sh    # LIBERO-plus 客户端环境：Python 3.10，MuJoCo 3.3.2，含资源下载
+```
 
-- **颜色类增强**（亮度、对比度、饱和度、传感器噪声、模糊、JPEG）：teacher 看干净画面，只有学生看扰动后的画面，目标不变，直接学不变性。对应目前最弱的传感器噪声类（58.5%）。
-- **几何类增强**（小角度旋转、裁剪、缩放）：对 teacher 和学生的输入做同一个几何变换，目标自然对齐，不用另外变换标签。对应相机视角类（43.3%）。
-- **色相要小心**：指令里有 “red mug”“black bowl” 这类颜色词，而 teacher 的词热图是在没有色相偏移的画面上算的。学生端不做色相增强，或者只做很小的幅度。
-- **接 StructWAM 之前先过一道关**：用 `runs/student_seg_robustness_20261027/score_seg.py` 在 167 个 LIBERO-plus 场景上重测分割纯度。新学生必须在噪声和视角扰动下有提升、干净画面上不退步，才值得接进 StructWAM 去训。
-- 换学生之后，结构专家的输入分布变了，StructWAM 要重训。为了省时间，可以用 s40000 的权重做初始化来微调。
-- 上一次蒸馏（`runs/mainline_20261016/g2_full`，2000 步）的算力开销还没查。
+- 两个环境的完整依赖版本在 `recipes/env/*.requirements.txt`（就是产出上面结果的环境的 pip freeze，去掉了 CANN 自带的包）。`torch_npu` 要和本机 CANN 匹配。
+- LIBERO-plus 客户端需要 ImageMagick（python wand）和 Mesa EGL。镜像里没有的话，把 `LIBERO_SYSDEPS_ENV` 指向一个补库的 env.sh（ModelArts 训练池镜像用的是 `sysdeps/hce2_aarch64/env.sh`，库文件本身不在仓库里）。
 
-### 3.3 顺序
+### 3.3 下载模型、数据和检查点
 
-| 阶段 | 内容 |
+```bash
+bash recipes/download_assets.sh          # 全部，约 120 GB
+bash recipes/download_assets.sh eval     # 只评测已发布的 b2 检查点（不含训练数据）
+```
+
+| 内容 | 来源 |
 |---|---|
-| 现在 | 改学生的增强，重新蒸馏，跑分割测试把关 |
-| 10-30 到 11-01 | a2、b2、b0、c0 训完并评测，选出基础配方 |
-| 第二轮 | 基础配方 + dropout 0.1，配一组 dropout 0 作对照 |
-| 第三轮 | 新学生 + 第二轮里最好的配置 |
-| 最后 | 用官方步数上限重新评测，作为论文里的数字；可以考虑加 EMA |
+| Cosmos-Predict2.5-2B（`robot/action-cond` + `tokenizer.pth`）、Cosmos-Reason1-7B | `nvidia/Cosmos-Predict2.5-2B`、`nvidia/Cosmos-Reason1-7B` |
+| UMT5 文本编码器（只在预计算学生的指令缓存时用） | `Wan-AI/Wan2.1-T2V-1.3B-Diffusers` 的 `text_encoder/`、`tokenizer/` |
+| 结构学生 `step_0002000.pt`、`text.pt`、`appearance_stats.npz` | [`xiangantao/structwam`](https://huggingface.co/xiangantao/structwam) 的 `student/` |
+| StructWAM b2 40k | [`xiangantao/structwam`](https://huggingface.co/xiangantao/structwam) 的 `b2/` |
+| 训练数据：OpenWAM 的 native-action LIBERO（LeRobot v3） | `OpenWAM/LIBERO`（数据集） |
+
+### 3.4 评测（全量 LIBERO-plus）
+
+```bash
+# 1. 训练检查点 -> 评测检查点：推理改成视频 1 步 + K/V 缓存，路径改成本机（只建软链接）
+$OPENWAM_PY recipes/prepare_eval_ckpt.py $STRUCTWAM_ASSETS/checkpoints/b2 $STRUCTWAM_ASSETS/eval_ckpt/b2_v1kv
+
+# 2. 预计算快速模式需要的两份缓存（1 张卡，约 5 分钟）
+bash recipes/eval/precompute_caches.sh $STRUCTWAM_ASSETS/eval_ckpt/b2_v1kv
+
+# 3. 每个 suite 一个 8 卡任务，可以分到 4 台机器上同时跑
+for suite in spatial object goal long; do
+    bash recipes/eval/eval_libero_plus.sh $suite $STRUCTWAM_ASSETS/eval_ckpt/b2_v1kv
+done
+
+# 看进度和结果（任意 python3）：
+python3 recipes/eval/progress.py $STRUCTWAM_ASSETS/eval/b2_v1kv --diff
+```
+
+- 重新运行同一条命令会接着跑，已完成的任务保留。`SAMPLE_RATIO=0.1` 只跑固定种子抽出的 10%，用来快速检查。
+- **快速模式（默认开）**：评测时环境渲染（MuJoCo 在 CPU 上软件渲染，每步约 0.65 秒）占了大部分时间，NPU 大约 80% 的时间在等。快速模式把 Cosmos-Reason1 文本编码器放到 CPU、所有指令的编码提前算好，每个服务的显存从约 28 GB 降到约 11.6 GB，每张卡跑 4 个服务、每个服务限用 24% 显存。实测吞吐约为每卡 2 个服务的 3.4 倍，一个 suite 8 卡约 4–6 小时（libero_10 最慢）。
+  - 每个服务加客户端约占 30 GB 内存；内存不够时脚本会自动退到每卡 3 个，或者退回原模式（文本编码器在 NPU，每卡 2 个）。
+  - 改动都是部署端的开关，不影响训练：`OPENWAM_TEXT_ENCODER_DEVICE`（`openwam/model/video_backbone/cosmos_predict25_backbone.py`）、`OPENWAM_PROMPT_CACHE_FILE` 和 `OPENWAM_NPU_MEM_FRACTION`（`openwam/deploy/engine.py`）、`OPENWAM_STUDENT_TEXT_EXTRA`（`heft/latent_policy/src/latent_dp/online.py`）。
+
+### 3.5 训练 b2
+
+```bash
+bash recipes/train_b2.sh --dry-run $STRUCTWAM_ASSETS/runs/b2      # 只打印解析后的配置
+bash recipes/train_b2.sh $STRUCTWAM_ASSETS/runs/b2                # 8 卡，40k 步；同一 RUN_DIR 重跑会续训
+```
+
+- 40k micro-step，每卡 batch 8、梯度累积 2（有效 batch 128），余弦学习率，每 2000 步存一次，保留最近 2 个。8×910B3 上约 8.5 秒一步，全程约 4 天。
+- 训练出的检查点用 3.4 的 `prepare_eval_ckpt.py` 转成评测检查点。
 
 ---
 
 ## 4. 仓库结构
 
-目录结构和 ModelArts 上的 workspace `/home/ma-user/work/2337888765/workspace` 一致；这个路径是到 `/mnt/sfs-turbo-wangfei/2337888765/workspace` 的软链接。
-
 | 路径 | 内容 |
 |---|---|
-| `StructWAM/` | 模型代码。保留了 OpenWAM-Official/OpenWAM 到上游 `4d7f642` 的历史（本仓库里是 `7c3cd8d`：树和作者都没变，只去掉了 co-author 尾注），后面接 StructWAM 的提交 |
+| `StructWAM/` | 模型代码。保留了 OpenWAM-Official/OpenWAM 到上游 `4d7f642` 的历史（本仓库里是 `7c3cd8d`：树和作者都没变，只去掉了 co-author 尾注），后面接 StructWAM 的提交。b2 配方：`configs/train_struct_b2.yaml` |
 | `heft/latent_policy`、`heft/latent_video` | 结构学生及其蒸馏代码（来自 xiangantao/good_state 的 `2fd6a9d`，加上当时未提交的改动） |
-| `runs/` | 训练池任务、LIBERO / LIBERO-plus 评测包装、测试和诊断脚本、各个 run 的 `command.txt` 和已评测检查点的 `config.yaml` |
+| `recipes/` | 环境安装、下载、训练、评测检查点准备、LIBERO-plus 评测（快速模式）、进度查看 |
+| `results/libero_plus_full_b2_v1kv/` | 全量 LIBERO-plus 逐任务结果（每个 suite 一个 `summary.csv`，含类别和难度） |
 | `sysdeps/hce2_aarch64/env.sh` | LIBERO-plus 客户端在原生训练池镜像上需要的 ImageMagick / Mesa-DRI 库的环境脚本（库文件本身不在仓库里） |
 
-不在仓库里的（都在 SFS 上）：检查点、数据集、预训练权重、conda 环境（`envs/openwam-npu`、`envs/libero-plus`）、评测输出、sysdeps 的二进制库。V-JEPA2 用的是 facebookresearch/vjepa2 的 `204698b`，没有改动。
-
-## 5. 换机后怎么恢复
-
-脚本里写死了 `/home/ma-user/work/2337888765` 和 `/mnt/sfs-turbo-wangfei/2337888765` 这两个绝对路径前缀。可以把这个仓库克隆成那个 `workspace/` 目录，也可以批量替换这两个前缀。`tri_system_struct.yaml` 里的 `latent_policy_root` 也要相应改。
-
-```bash
-export PYTHONPATH="$WORKSPACE/StructWAM:$WORKSPACE/heft/latent_policy/src:$WORKSPACE/heft"
-```
-
-## 6. 常用入口
-
-- 训练一个消融变体（8 NPU，自动从最近的检查点续训）：`runs/structwam_a123_20261027/train_arm_modelarts.sh {a1|a2|a3|b2|b0|c0}`
-- LIBERO-plus 10% 干净指令评测：`runs/libero_plus_sample10_clean/eval_libero_plus_modelarts.sh NAME CKPT_DIR CKPT_NAME`
-- OpenWAM-Cosmos 基线评测：`runs/stage0_libero_plus_20261027/eval_openwam_baseline_modelarts.sh`
-- 新增功能的测试：`runs/structwam_a123_tests_20261027/test_*.py`
-- 检查点自动上传到 Hugging Face 私有仓库：`runs/hf_ckpt_uploader/`（`login.sh` 登录一次，`start.sh` 后台启动，`stop.sh` 停止；冻结的 Reason1 和 VAE 靠 hf_xet 去重，每个新检查点实际只传约 6 GB）
+V-JEPA2 用的是 facebookresearch/vjepa2 的 `204698b`，没有改动。

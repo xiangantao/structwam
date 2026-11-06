@@ -1,0 +1,26 @@
+# StructWAM b2 recipe — the best configuration so far (LIBERO-plus full, 10030 tasks: 85.5% with
+# 1-step video + video/structure K/V cache at inference; see the top-level README):
+#   - the video loss does not train the structure expert (video_detach: [structure]),
+#   - no track-consistency loss (lambda_track: 0),
+#   - video dropout 0.3 (action + structure rows see no video keys for 30% of the samples),
+#   - consistent image augmentation (openwam/structure/augment.py, defaults),
+#   - 40k micro-steps on 8 NPUs x batch 8 x accumulation 2 (effective batch 128), cosine LR.
+# Train:  bash recipes/train_b2.sh
+defaults:
+  - train_struct
+  - _self_
+
+training:
+  dataset_num_workers: 4
+
+dataloader:
+  structure_augment:
+    enabled: true
+
+model:
+  architecture:
+    structure:
+      video_detach: [structure]
+      action_video_dropout: 0.3
+      losses:
+        lambda_track: 0.0

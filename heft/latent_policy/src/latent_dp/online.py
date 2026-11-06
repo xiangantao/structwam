@@ -124,6 +124,20 @@ def maps_job(job):
     return maps, keypoints
 
 
+def _text_cache_path(checkpoint, saved):
+    """The student's UMT5 text cache: the path recorded at training time, else ``text.pt`` next to the
+    checkpoint (how the released student is laid out), so the checkpoint works on another machine."""
+    from pathlib import Path
+
+    recorded = Path(saved["config"]["train"]["text_cache"])
+    if recorded.is_file():
+        return str(recorded)
+    beside = Path(checkpoint).with_name("text.pt")
+    if beside.is_file():
+        return str(beside)
+    raise FileNotFoundError(f"student text cache not found at {recorded} nor {beside}")
+
+
 class OnlineMaps:
     """Frozen student -> policy maps (A), keypoint tokens (C) and the V-JEPA2 trunk, per window.
 
@@ -140,7 +154,7 @@ class OnlineMaps:
         saved = torch.load(str(checkpoint), map_location="cpu", weights_only=False, mmap=True)
         self.student = StructuredStudent(ModelConfig(**saved["config"]["model"]), pretrained=False)
         self.student.load_state_dict(saved["model"], strict=True)
-        self.text_cache = torch.load(saved["config"]["train"]["text_cache"], map_location="cpu", weights_only=True)
+        self.text_cache = torch.load(_text_cache_path(checkpoint, saved), map_location="cpu", weights_only=True)
         self.text_root = text_root or saved["config"]["teacher"]["text_root"]
         del saved
         self.student = self.student.eval().requires_grad_(False).to(device)
@@ -190,6 +204,20 @@ class OnlineMaps:
     def text_for(self, tasks):
         for task in set(tasks) - set(self.text):
             embedding = self.text_cache.get(task)
+            if embedding is None:
+                # Eval-only: OPENWAM_STUDENT_TEXT_EXTRA=<.pt> holds the same UMT5 embeddings for
+                # instructions outside the cache (precomputed; bf16 is lossless here), so a server
+                # never loads the 11 GB UMT5 encoder onto the accelerator mid-episode.
+                if getattr(self, "_extra_text", None) is None:
+                    import os as _os
+
+                    path = _os.environ.get("OPENWAM_STUDENT_TEXT_EXTRA")
+                    self._extra_text = (
+                        torch.load(path, map_location="cpu", weights_only=True, mmap=True) if path else {}
+                    )
+                extra = self._extra_text.get(task)
+                if extra is not None:
+                    embedding = extra.float()
             if embedding is None:
                 if self.mode != "words":
                     raise KeyError(f"instruction not in the student's text cache: {task!r}")

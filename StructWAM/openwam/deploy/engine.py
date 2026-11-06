@@ -228,8 +228,26 @@ class JointInferenceEngine(BaseInferenceEngine):
             if cache_cfg is not None:
                 cache_enabled = bool(getattr(cache_cfg, "enabled", True))
                 cache_maxsize = int(getattr(cache_cfg, "maxsize", cache_maxsize))
+        # Deploy-only: OPENWAM_NPU_MEM_FRACTION=f caps this process's share of the
+        # accelerator, so several servers on one card cannot starve each other through
+        # cached-but-free allocator blocks (the allocator frees its cache at the cap).
+        mem_fraction = os.environ.get("OPENWAM_NPU_MEM_FRACTION")
+        if mem_fraction and torch.cuda.is_available():
+            torch.cuda.set_per_process_memory_fraction(float(mem_fraction))
+            logger.info("per-process accelerator memory fraction set to %s", mem_fraction)
+        # Deploy-only: OPENWAM_PROMPT_CACHE_FILE=<.pt> prefills the cache with precomputed
+        # {prompt: post-projection context} (recipes/eval/precompute_prompt_cache.py), so a
+        # server whose text encoder lives on the CPU never runs it for a known prompt.
+        prefill_path = os.environ.get("OPENWAM_PROMPT_CACHE_FILE") or None
+        prefill = torch.load(prefill_path, map_location="cpu") if (cache_enabled and prefill_path) else None
+        if prefill:
+            cache_maxsize = max(cache_maxsize, len(prefill) + 256)
         if cache_enabled:
             self._prompt_embed_cache = _BoundedPromptEmbedCache(maxsize=cache_maxsize)
+            if prefill:
+                for key, value in prefill.items():
+                    self._prompt_embed_cache[key] = value
+                logger.info("prompt_embed_cache prefilled with %d prompts from %s", len(prefill), prefill_path)
         else:
             self._prompt_embed_cache = None
             logger.info("prompt_embed_cache disabled by config")

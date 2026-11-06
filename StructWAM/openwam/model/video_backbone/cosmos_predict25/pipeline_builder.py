@@ -70,7 +70,7 @@ _COSMOS25_2B_NET_KWARGS: dict = dict(
     # Upstream 2B configs (video2world reason_1p1 / action_conditioned) feed the DiT sigma in
     # [0, 1]: timesteps in [0, 1000] are scaled by 0.001.  Without it the pretrained network sees
     # timesteps 1000x too large and its denoising is no better than its noisy input (checked on
-    # LIBERO latents, scripts/structwam/check_cosmos_npu.py).
+    # LIBERO latents on 2026-10-20).
     timestep_scale=0.001,
     # NB: SACConfig defaults to mode="mm_only" upstream, which wraps every
     # block in a `_checkpoint_wrapped_module` shim and renames every state-dict

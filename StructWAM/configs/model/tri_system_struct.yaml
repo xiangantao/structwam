@@ -53,11 +53,11 @@ architecture:
     log_every: 50                  # structure loss terms -> training log (rank 0)
 
     student:
-      latent_policy_root: /home/ma-user/work/2337888765/workspace/heft/latent_policy
-      checkpoint: /home/ma-user/work/2337888765/workspace/runs/mainline_20261016/g2_full/step_0002000.pt
+      latent_policy_root: ${oc.env:STRUCTWAM_REPO}/heft/latent_policy
+      checkpoint: ${oc.env:STRUCTWAM_ASSETS}/student/step_0002000.pt
       roles: null                  # null = word mode (no grammar): up to 5 most concentrated instruction words
       text_root: null              # UMT5 for instructions outside the student's text cache; null = from the checkpoint
-      appearance_stats: /home/ma-user/work/2337888765/workspace/runs/dp_stacked_20261018/maps/stats.npz
+      appearance_stats: ${oc.env:STRUCTWAM_ASSETS}/student/appearance_stats.npz
       history: 33
       image_size: 256
       workers: 8
@@ -79,8 +79,8 @@ architecture:
     inference:
       near_threshold: 0.5
       video_steps_far: 1
-      video_steps_near: 2
+      video_steps_near: 1
       sketch_start_t: null         # sketch warm start off; 600 = start action denoising from the noised sketch
-      video_kv_cache: false        # true: once the video freezes, one forward keeps its (and the structure) K/V; later action steps run the action expert alone
+      video_kv_cache: true         # true: once the video freezes, one forward keeps its (and the structure) K/V; later action steps run the action expert alone
       log_timing: false            # true: log student / denoising wall time per generate ([STRUCT_TIMING])
     structure_only_action: false # true: action + structure rows see no video keys at inference

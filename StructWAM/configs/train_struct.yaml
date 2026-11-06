@@ -17,7 +17,7 @@ training:
   output_path: outputs/structwam_checkpoints
 
 dataloader:
-  dataset_dir: /home/ma-user/work/2337888765/workspace/datasets/openwam/libero
+  dataset_dir: ${oc.env:STRUCTWAM_ASSETS}/datasets/openwam/libero
 
 model:
   architecture:

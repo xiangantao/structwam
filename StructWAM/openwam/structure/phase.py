@@ -36,5 +36,7 @@ class PhaseGate(nn.Module):
     def forward(self, pooled: Tensor, proprio: Optional[Tensor] = None) -> Tensor:
         x = pooled
         if self.state is not None and proprio is not None:
-            x = x + self.state(proprio.reshape(proprio.shape[0], -1).to(x.dtype))
+            # Reshape by the pooled batch: deploy passes a 1-D [state_dim] proprio, which a reshape by its
+            # own first dim turned into [state_dim, 1]. Identical for the [B, state_dim] training inputs.
+            x = x + self.state(proprio.reshape(pooled.shape[0], -1).to(x.dtype))
         return self.head(x).squeeze(-1)

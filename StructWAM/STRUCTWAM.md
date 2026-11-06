@@ -72,11 +72,9 @@
 - `policy.py`：每个控制步都记录历史帧
 - 数据集注册表和 tri_system 包导出：各加一行
 
-## 怎么跑（还没跑过）
+## 怎么跑
 
-```bash
-bash scripts/structwam/train_npu.sh dataloader.dataset_dir=/path/to/openwam_libero
-```
+训练、准备评测检查点、LIBERO-plus 评测的入口都在仓库根目录的 `recipes/`，步骤见根目录 README 的“快速上手”。
 
 只读检查：
 
@@ -95,9 +93,9 @@ python scripts/structwam/check_static.py
    - **修正了 OpenWAM 的一个缺陷：** Cosmos-Predict2.5 的网络参数漏了上游的 `timestep_scale=0.001`，网络看到的时间步大了 1000 倍，预训练的去噪能力用不上。已补上。
    - 上游的 float32 策略（时间嵌入、AdaLN 调制、输出层用 float32）用“float32 计算岛”实现，不依赖 NPU 不支持的 float32 autocast（`fp32_strategy: true`）。
    - 联合注意力按行分组：视频行、结构行用布尔掩码（走融合注意力），只有动作行带门控偏置。和整段浮点掩码结果一致，单层快 3.7 倍。
-   - 检查结果（`scripts/structwam/check_cosmos_npu.py`，`runs/cosmos_npu_check_20261020/`）：4 段真实 LIBERO 片段加噪还原，相对误差 σ=0.3/0.6/0.9 为 0.076/0.280/0.818（带噪输入为 0.212/0.848/1.909）；错误 RoPE 0.102/0.341、无 RoPE 0.186/0.572，确认 RoPE 正确。DiT 批 4 前向加反向 0.52 s，显存峰值 28 GiB。
+   - 检查结果（2026-10-20 的一次性检查，脚本已不在仓库里）：4 段真实 LIBERO 片段加噪还原，相对误差 σ=0.3/0.6/0.9 为 0.076/0.280/0.818（带噪输入为 0.212/0.848/1.909）；错误 RoPE 0.102/0.341、无 RoPE 0.186/0.572，确认 RoPE 正确。DiT 批 4 前向加反向 0.52 s，显存峰值 28 GiB。
    - deepspeed 在昇腾上能否正常工作，还没验证。
-5. **新指令：** 不在学生文本缓存里的指令会现场用 UMT5 编码（第一次会加载约 11 GB 的编码器）。
+5. **新指令：** 不在学生文本缓存里的指令会现场用 UMT5 编码（第一次会加载约 11 GB 的编码器）。评测时用 `recipes/eval/precompute_caches.sh` 提前算好（`OPENWAM_STUDENT_TEXT_EXTRA`），服务端就不会再加载它。
 6. **位置关系：** “旁边”“上面”这类定位词目前不专门处理，以后再看。
 
 ## 推理和部署的约束

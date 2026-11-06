@@ -1,8 +1,2 @@
+recipes/paths.local.sh
 __pycache__/
-*.pyc
-kernel_meta/
-fusion_result.json
-*.log
-*.safetensors
-*.npz.tmp
-.DS_Store

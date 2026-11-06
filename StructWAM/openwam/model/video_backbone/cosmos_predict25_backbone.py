@@ -753,14 +753,29 @@ class CosmosPredict25VideoBackbone(VideoBackbone):
     def set_dtype_device(self, dtype: torch.dtype, device: torch.device) -> None:
         self._dtype = dtype
         self._device = device
+        # Deploy-only: OPENWAM_TEXT_ENCODER_DEVICE=cpu keeps the 16 GB
+        # Reason1 encoder off the accelerator. It runs once per new prompt (the
+        # engine's prompt_embed_cache holds the result) and its output is moved
+        # to ``device`` in ``_encode_text_context``, so only the encode itself
+        # changes device. Reason1 is detached while the rest moves, so it never
+        # touches accelerator memory, even transiently.
+        import os as _os
+
+        te_device = _os.environ.get("OPENWAM_TEXT_ENCODER_DEVICE") or None
+        reason1 = self._modules.pop("reason1", None) if te_device else None
         # nn.Module.to(...) walks the flat children (dit / vae / reason1).
         self.to(dtype=dtype, device=device)
+        if reason1 is not None:
+            reason1.to(dtype=dtype, device=torch.device(te_device))
+            self._modules["reason1"] = reason1
         # The plain-object VAE / Reason1 facades are not nn.Modules, so move them
         # explicitly (incl. the wan2pt1 mean/std + scale-list stale-device fix).
         if self._vae_iface is not None:
             _move_cosmos_vae(self._vae_iface, dtype=dtype, device=device)
         if self.text_encoder is not None and not isinstance(self.text_encoder, nn.Module):
-            _move_cosmos_reason1(self.text_encoder, dtype=dtype, device=device)
+            _move_cosmos_reason1(
+                self.text_encoder, dtype=dtype, device=torch.device(te_device) if te_device else device
+            )
 
     # ------------------------------------------------------------------
     # Deploy

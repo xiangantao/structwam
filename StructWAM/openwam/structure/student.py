@@ -33,7 +33,7 @@ CAMERA_IS_WRIST = {"head": False, "wrist": True}
 @dataclass
 class StudentConfig:
     latent_policy_root: str              # .../heft/latent_policy (src/ holds latent_dp and vace_latent_distill)
-    checkpoint: str                      # student checkpoint, e.g. runs/mainline_20261016/g2_full/step_0002000.pt
+    checkpoint: str                      # student checkpoint, e.g. $STRUCTWAM_ASSETS/student/step_0002000.pt
     appearance_stats: str                # npz with k_mean / k_basis (present-K PCA), e.g. a DP run's stats.npz
     roles: Optional[str] = None          # legacy grammar roles (role mode); None = word mode
     text_root: Optional[str] = None      # UMT5 tokenizer / encoder; None = the student checkpoint's teacher text_root
