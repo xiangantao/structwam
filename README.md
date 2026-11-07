@@ -97,6 +97,22 @@
 | 物体布局 | 96.9 | 89.8 | 71.3 | 93.9 | 87.3 |
 | **合计** | **90.6** | **89.6** | **80.3** | **81.8** | **85.5** |
 
+### 标准 LIBERO（4 个 suite × 10 个任务 × 50 次，同一个 b2 检查点）
+
+**总成功率 98.9%**（1978 / 2000）。汇总：`results/libero_b2_v1kv/summary.json`。
+
+| suite | 成功 / 次数 | 成功率 | 没到 100% 的任务 |
+|---|---|---|---|
+| libero_spatial | 494 / 500 | 98.8 | task 4：49/50，task 5：45/50 |
+| libero_object | 500 / 500 | 100.0 | — |
+| libero_goal | 496 / 500 | 99.2 | task 1：48/50，task 2：48/50 |
+| libero_10 | 488 / 500 | 97.6 | task 1：49/50，task 6：47/50，task 8：45/50，task 9：47/50 |
+| **合计** | **1978 / 2000** | **98.9** | |
+
+- 协议：OpenWAM 的 LIBERO 评测代码（`StructWAM/benchmarks/libero`）：每个任务 50 次，seed 42，`rng_mode: environment`，settle 30 步，每个 episode 最多 600 个环境步（libero_10 为 700），动作去噪 10 步、每次规划执行 10 个动作。
+- 为了加速，每个任务的 50 次被拆成 10 个 5 次的块，放进一个共享队列，由 32 个服务（8 卡 × 每卡 4 个，快速模式）并行跑。拆块前先用 OpenWAM 的 `benchmarks/libero/eval_manifest.py` 给每个任务生成一份密封的 manifest，固定每一次 trial 开始前的随机状态，所以分块跑的结果和 50 次连续跑完全相同。2000 个 episode 用时约 3 小时。
+- 参考：LIBERO-plus 论文表 1 的“Original”列（未加扰动的 LIBERO）给出 OpenVLA-OFT 97.1、RIPT-VLA 97.5、UniVLA 95.2、π0 94.2、π0-FAST 85.5。这些是各自论文的设置，步数上限等细节不一定和我们一致。
+
 ### 和其他方法比较
 
 OpenWAM 论文的 LIBERO-plus 表（`StructWAM/benchmarks/libero-plus/README.md` 第 4 节），列为相机 / 机器人 / 语言 / 光照 / 背景 / 噪声 / 布局 / 平均：
@@ -229,6 +245,7 @@ bash recipes/train_b2.sh $STRUCTWAM_ASSETS/runs/b2                # 8 卡，40k 
 | `heft/latent_policy`、`heft/latent_video` | 结构学生及其蒸馏代码（来自 xiangantao/good_state 的 `2fd6a9d`，加上当时未提交的改动） |
 | `recipes/` | 环境安装、下载、训练、评测检查点准备、LIBERO-plus 评测（快速模式）、进度查看 |
 | `results/libero_plus_full_b2_v1kv/` | 全量 LIBERO-plus 逐任务结果（每个 suite 一个 `summary.csv`，含类别和难度） |
+| `results/libero_b2_v1kv/` | 标准 LIBERO 结果（每个 suite 每个任务的成功次数） |
 | `sysdeps/hce2_aarch64/env.sh` | LIBERO-plus 客户端在原生训练池镜像上需要的 ImageMagick / Mesa-DRI 库的环境脚本（库文件本身不在仓库里） |
 
 V-JEPA2 用的是 facebookresearch/vjepa2 的 `204698b`，没有改动。

@@ -1,0 +1,192 @@
+{
+  "suites": {
+    "libero_10": {
+      "tasks": {
+        "0": {
+          "successes": 50,
+          "trials": 50
+        },
+        "1": {
+          "successes": 49,
+          "trials": 50
+        },
+        "2": {
+          "successes": 50,
+          "trials": 50
+        },
+        "3": {
+          "successes": 50,
+          "trials": 50
+        },
+        "4": {
+          "successes": 50,
+          "trials": 50
+        },
+        "5": {
+          "successes": 50,
+          "trials": 50
+        },
+        "6": {
+          "successes": 47,
+          "trials": 50
+        },
+        "7": {
+          "successes": 50,
+          "trials": 50
+        },
+        "8": {
+          "successes": 45,
+          "trials": 50
+        },
+        "9": {
+          "successes": 47,
+          "trials": 50
+        }
+      },
+      "successes": 488,
+      "trials": 500
+    },
+    "libero_goal": {
+      "tasks": {
+        "0": {
+          "successes": 50,
+          "trials": 50
+        },
+        "1": {
+          "successes": 48,
+          "trials": 50
+        },
+        "2": {
+          "successes": 48,
+          "trials": 50
+        },
+        "3": {
+          "successes": 50,
+          "trials": 50
+        },
+        "4": {
+          "successes": 50,
+          "trials": 50
+        },
+        "5": {
+          "successes": 50,
+          "trials": 50
+        },
+        "6": {
+          "successes": 50,
+          "trials": 50
+        },
+        "7": {
+          "successes": 50,
+          "trials": 50
+        },
+        "8": {
+          "successes": 50,
+          "trials": 50
+        },
+        "9": {
+          "successes": 50,
+          "trials": 50
+        }
+      },
+      "successes": 496,
+      "trials": 500
+    },
+    "libero_object": {
+      "tasks": {
+        "0": {
+          "successes": 50,
+          "trials": 50
+        },
+        "1": {
+          "successes": 50,
+          "trials": 50
+        },
+        "2": {
+          "successes": 50,
+          "trials": 50
+        },
+        "3": {
+          "successes": 50,
+          "trials": 50
+        },
+        "4": {
+          "successes": 50,
+          "trials": 50
+        },
+        "5": {
+          "successes": 50,
+          "trials": 50
+        },
+        "6": {
+          "successes": 50,
+          "trials": 50
+        },
+        "7": {
+          "successes": 50,
+          "trials": 50
+        },
+        "8": {
+          "successes": 50,
+          "trials": 50
+        },
+        "9": {
+          "successes": 50,
+          "trials": 50
+        }
+      },
+      "successes": 500,
+      "trials": 500
+    },
+    "libero_spatial": {
+      "tasks": {
+        "0": {
+          "successes": 50,
+          "trials": 50
+        },
+        "1": {
+          "successes": 50,
+          "trials": 50
+        },
+        "2": {
+          "successes": 50,
+          "trials": 50
+        },
+        "3": {
+          "successes": 50,
+          "trials": 50
+        },
+        "4": {
+          "successes": 49,
+          "trials": 50
+        },
+        "5": {
+          "successes": 45,
+          "trials": 50
+        },
+        "6": {
+          "successes": 50,
+          "trials": 50
+        },
+        "7": {
+          "successes": 50,
+          "trials": 50
+        },
+        "8": {
+          "successes": 50,
+          "trials": 50
+        },
+        "9": {
+          "successes": 50,
+          "trials": 50
+        }
+      },
+      "successes": 494,
+      "trials": 500
+    }
+  },
+  "overall": {
+    "successes": 1978,
+    "trials": 2000
+  }
+}
