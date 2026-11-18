@@ -177,6 +177,21 @@ class ObsPreprocessor:
             "head": head_pil,
             "wrist": _as_pil(wrist_raw, ctx="images['left_wrist_camera']") if wrist_raw is not None else None,
         }
+        # Optional (11-12): clients may send the student's frames separately, already at the training
+        # reader's resolution (source frame -> LANCZOS structure_size, libero_struct._decode_history).
+        # Without it the history is rebuilt from the L-shape slot images above (head 320x256, wrist
+        # 160x128) and upsampled, which blurs the wrist view (PSNR ~32-35 dB vs the training frames).
+        if self.canvas_layout == "side_by_side3" and imgs.get("right_wrist_camera") is not None:
+            obs["raw_images"]["head_right"] = _as_pil(imgs["right_wrist_camera"], ctx="images['right_wrist_camera']")
+        elif imgs.get("right_wrist_camera") is not None:
+            # 11-17: bimanual (RoboTwin) students read the right wrist as "wrist_right"
+            # (robotwin_struct: wrist_right <- right_camera). Architectures without it filter it out.
+            obs["raw_images"]["wrist_right"] = _as_pil(imgs["right_wrist_camera"], ctx="images['right_wrist_camera']")
+        student = obs.get("structure_images")
+        if isinstance(student, dict):
+            for camera in ("head", "wrist", "wrist_right", "head_right"):
+                if student.get(camera) is not None:
+                    obs["raw_images"][camera] = _as_pil(student[camera], ctx=f"structure_images[{camera!r}]")
 
         # --- Dispatch by server's configured view mode ---
         if not self.multiview:

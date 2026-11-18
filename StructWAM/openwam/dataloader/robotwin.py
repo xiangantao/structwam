@@ -893,6 +893,10 @@ class MultiTaskRoboTwinDataset(BaseDataset):
     """
 
     _BOTH_VARIANTS = ["clean_50", "randomized_500"]
+    # Per-task reader class and extra config keys forwarded to it (subclasses, e.g. robotwin_struct).
+    # None = this module's RoboTwinDataset, looked up at construction time (so tests can patch it).
+    _SUB_DATASET_CLS = None
+    _EXTRA_CONFIG_KEYS: tuple = ()
 
     @classmethod
     def from_config(cls, config, split: str = "train"):
@@ -938,6 +942,7 @@ class MultiTaskRoboTwinDataset(BaseDataset):
             unify_action_map=_get("unify_action_map", None),
             unify_state_map=_get("unify_state_map", None),
             color_jitter=_get("color_jitter", None),
+            **{key: _get(key) for key in cls._EXTRA_CONFIG_KEYS if _get(key) is not None},
         )
 
     def __init__(
@@ -1126,7 +1131,7 @@ class MultiTaskRoboTwinDataset(BaseDataset):
                     task_iter.set_postfix_str(display_name)
                     _devnull = _stack.enter_context(open(_os.devnull, "w"))
                     _stack.enter_context(contextlib.redirect_stdout(_devnull))
-                ds = RoboTwinDataset(
+                ds = (self._SUB_DATASET_CLS or RoboTwinDataset)(
                     data_root=data_root,
                     task_name=display_name.split("/")[0].replace("_", " "),
                     normalization_stats_path=normalization_stats_path,

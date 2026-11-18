@@ -598,7 +598,9 @@ class CosmosPredict25VideoBackbone(VideoBackbone):
         DiT-owned ``crossattn_proj`` is applied HERE (not in prepare) so the
         architecture's proprio-token concat sees 1024-d context.
         """
-        context = self.text_encoder(text)
+        context = self._memo_text(text) if self.training else None
+        if context is None:
+            context = self.text_encoder(text)
         context = context.to(device=device, dtype=dtype)
         net = self.dit
         if getattr(net, "use_crossattn_projection", False) and context.shape[-1] == int(
@@ -606,6 +608,26 @@ class CosmosPredict25VideoBackbone(VideoBackbone):
         ):
             context = net.crossattn_proj(context)
         return context
+
+    def _memo_text(self, text: Any) -> Optional[Tensor]:
+        """Training-only, opt-in (OPENWAM_TRAIN_TEXT_MEMO=<max prompts>): per-process CPU memo of the
+        pre-projection Reason1 embedding per prompt string.  The encoder is deterministic per string, so
+        this equals the live path; CFG-dropped prompts are the string "" and memoize like any other."""
+        import os as _os
+
+        limit = int(_os.environ.get("OPENWAM_TRAIN_TEXT_MEMO", "0") or 0)
+        if limit <= 0:
+            return None
+        texts = [text] if isinstance(text, str) else list(text)
+        memo = self.__dict__.setdefault("_train_text_memo", {})
+        missing = [t for t in dict.fromkeys(texts) if t not in memo]
+        if missing:
+            encoded = self.text_encoder(missing)
+            fresh = {t: encoded[i].detach().to("cpu") for i, t in enumerate(missing)}
+            if len(memo) + len(fresh) > limit:
+                return torch.stack([fresh[t] if t in fresh else memo[t] for t in texts])
+            memo.update(fresh)
+        return torch.stack([memo[t] for t in texts])
 
     def _encode_frames(self, frames: Any) -> Tensor:
         """PIL frames → bf16 ``(B, 16, T_lat, H/8, W/8)`` Wan2pt1 latents."""

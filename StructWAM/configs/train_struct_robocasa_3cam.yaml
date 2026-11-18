@@ -1,0 +1,54 @@
+# StructWAM on RoboCasa-24 with all three cameras (11-12), otherwise the train_struct_robocasa (b2) recipe.
+#   canvas   : side_by_side3 = left agentview | wrist | right agentview, each at its native 224x224
+#              (224 x 672; 588 DiT tokens per latent frame vs 480 for the 384x320 L-shape)
+#   student  : RoboCasa student distilled on all three cameras (runs/robocasa24_student/g2_libero_heads_3cam);
+#              the right agentview is an exterior camera (head_right, not a wrist)
+#   augment  : colour only (one brightness / contrast / saturation draw shared by all cameras); no affine, no
+#              blur (RoboCasa eval cameras are fixed; unseen kitchen styles / objects change colours)
+#   dropout  : action_video_dropout 0.15 (b2: 0.3)
+#   budget   : 16 NPUs x batch 8 x accumulation 1 = 128 per update; max_steps 20,000 = 2.56M samples ~ 8.1
+#              epochs (11-12, user; b2_50k_tuned: 3.2M ~ 10.1 epochs; ForeWAM 20 epochs = 49,530 steps)
+defaults:
+  - train_struct_robocasa
+  - _self_
+
+training:
+  max_steps: 20000
+  batch_size: 8
+  gradient_accumulation_steps: 1
+  save_steps: 1000
+  dataset_num_workers: 12
+  output_path: outputs/structwam_robocasa_3cam_checkpoints
+
+dataloader:
+  height: 224
+  width: 672
+  camera_layout: [observation.images.image, observation.images.image2, observation.images.image3]
+  canvas_layout: side_by_side3
+  structure_augment:
+    enabled: true
+    rotate_deg: 0.0
+    scale_max: 1.0
+    blur_prob: 0.0
+    brightness: 0.25
+    contrast: 0.25
+    saturation: 0.3
+    hue: 0.0
+    independent_color: false
+
+model:
+  architecture:
+    structure:
+      cameras: [head, wrist, head_right]
+      canvas_layout: side_by_side3
+      action_video_dropout: 0.15
+      student:
+        cameras: [head, wrist, head_right]
+        checkpoint: ${oc.env:STRUCTWAM_ASSETS}/student_robocasa_3cam/step_0002000.pt
+        appearance_stats: ${oc.env:STRUCTWAM_ASSETS}/student_robocasa_3cam/appearance_stats.npz
+        async_maps: true
+        workers: 16
+        chunk: 8                    # 3 cameras x batch 8 = 24 student windows: one camera per forward
+
+project:
+  name: structwam_robocasa_3cam

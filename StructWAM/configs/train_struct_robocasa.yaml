@@ -1,0 +1,35 @@
+# StructWAM on RoboCasa-24 (ForeWAM / Cosmos-Policy protocol: 24 tasks, ~50 human demos each), b2 recipe.
+#   data     : datasets/openwam/robocasa24 (native-action EEF10, LeRobot v3, 20 fps; read by libero_struct)
+#   student  : RoboCasa-distilled structure student (LIBERO-selected teacher heads), runs/robocasa24_student/g2_libero_heads
+#   budget   : 50,000 micro-steps = 25,000 optimizer updates x 128 = 3.2M samples ~ 10.1 epochs of the 316,995
+#              windows (8 NPUs x batch 8 x accumulation 2; ForeWAM 20 epochs would be 99,060 micro-steps)
+#   b2       : video loss does not train the structure expert, no track loss, video dropout 0.3, consistent augmentation
+defaults:
+  - train_struct
+  - _self_
+
+training:
+  max_steps: 50000
+  dataset_num_workers: 4
+  output_path: outputs/structwam_robocasa_checkpoints
+
+dataloader:
+  dataset_dir: ${oc.env:STRUCTWAM_ASSETS}/datasets/openwam/robocasa24
+  structure_augment:
+    enabled: true
+
+model:
+  architecture:
+    structure:
+      video_detach: [structure]
+      action_video_dropout: 0.3
+      losses:
+        lambda_track: 0.0
+      student:
+        checkpoint: ${oc.env:STRUCTWAM_ASSETS}/student_robocasa/step_0002000.pt
+        appearance_stats: ${oc.env:STRUCTWAM_ASSETS}/student_robocasa/appearance_stats.npz
+        async_maps: false           # true: overlap the student's CPU map pool with the video / text encoding
+        maps_profile: null          # default (LIBERO) hand thresholds: best for the student (runs/robocasa_policy_check_20261109/check_student_default); "robocasa" was tuned on teacher fields and over-tightens the student
+
+project:
+  name: structwam_robocasa

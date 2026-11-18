@@ -237,3 +237,36 @@ def test_state_accepts_nested_list_and_flattens():
     )
     assert obs["state"].shape == (20,)
     assert obs["state"].dtype == np.float32
+
+
+# ── StructWAM: raw per-camera frames for the structure student ─────────────────────────────
+
+
+def _three_cameras() -> dict:
+    return {
+        "head_camera": _jpeg_b64(seed=1),
+        "left_wrist_camera": _jpeg_b64(seed=2),
+        "right_wrist_camera": _jpeg_b64(seed=3),
+    }
+
+
+def test_lshape_passes_right_wrist_to_structure_student():
+    # RoboTwin trains the student on head + left wrist + right wrist (robotwin_struct: wrist_right <-
+    # right_camera); before 11-17 the right wrist never reached the deploy-time history.
+    obs = _multi_view().preprocess({"images": _three_cameras(), "prompt": "go"})
+    assert set(obs["raw_images"]) == {"head", "wrist", "wrist_right"}
+    sent = Image.open(io.BytesIO(base64.b64decode(_three_cameras()["right_wrist_camera"]))).convert("RGB")
+    assert np.array_equal(np.asarray(obs["raw_images"]["wrist_right"]), np.asarray(sent))
+
+
+def test_side_by_side3_keeps_right_camera_as_head_right():
+    pre = ObsPreprocessor(multiview=True, camera_layout=list(DEFAULT_MULTIVIEW_CAMERA_LAYOUT), img_height=32,
+                          img_width=96, canvas_layout="side_by_side3")
+    obs = pre.preprocess({"images": _three_cameras(), "prompt": "go"})
+    assert set(obs["raw_images"]) == {"head", "wrist", "head_right"}
+
+
+def test_no_right_wrist_leaves_two_student_cameras():
+    images = dict(_three_cameras(), right_wrist_camera=None)
+    obs = _multi_view().preprocess({"images": images, "prompt": "go"})
+    assert set(obs["raw_images"]) == {"head", "wrist"}

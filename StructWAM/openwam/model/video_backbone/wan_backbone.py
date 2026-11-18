@@ -80,6 +80,7 @@ class WanBase(VideoBackbone):
         self.vace = None
         self.image_encoder = None
         self.motion_controller = None
+        self.text_encoder = None
         # Promote sub-modules to named children so state_dict uses clean prefixes.
         for _name in ("dit", "dit2", "vae", "vace", "vace2", "text_encoder", "image_encoder", "motion_controller"):
             _mod = getattr(holder, _name, None)
@@ -91,6 +92,9 @@ class WanBase(VideoBackbone):
         # division factors / latent_spec before ``cls(holder, ...)``.
         self._scheduler = getattr(holder, "scheduler", None)
         self._tokenizer = getattr(holder, "tokenizer", None)
+        # Prompt → UMT5 context (CPU, not in state_dict); set only when training
+        # from a precomputed cache, in which case ``text_encoder`` is None.
+        self._text_cache = getattr(holder, "text_cache", None)
         self._height_division_factor = getattr(holder, "height_division_factor", None)
         self._width_division_factor = getattr(holder, "width_division_factor", None)
         self._time_division_factor = getattr(holder, "time_division_factor", None)
@@ -770,9 +774,12 @@ class WanBase(VideoBackbone):
         )
 
         batch_size = len(frames)
-        context, seq_lens = wan_encode.encode_text(
-            text, tokenizer=self._tokenizer, text_encoder=self.text_encoder, device=self.device
-        )
+        if self._text_cache is not None:
+            context, seq_lens = wan_encode.cached_text_context(text, cache=self._text_cache, device=self.device)
+        else:
+            context, seq_lens = wan_encode.encode_text(
+                text, tokenizer=self._tokenizer, text_encoder=self.text_encoder, device=self.device
+            )
 
         all_input_videos = []
         for clip_frames in frames:
@@ -782,7 +789,20 @@ class WanBase(VideoBackbone):
                 )
             )
         stacked_inputs = torch.cat(all_input_videos, dim=0)
-        input_latents = wan_encode.encode_video(stacked_inputs, vae=self.vae, encoder=self.video_encoder)
+        # The VAE is frozen and encodes each clip independently, so chunking
+        # gives the same latents while cutting the activation peak (w0 OOM'd
+        # here encoding all 8 clips at once). WAN_VAE_ENCODE_CHUNK<=0 disables it.
+        chunk = int(os.environ.get("WAN_VAE_ENCODE_CHUNK", "1"))
+        if chunk <= 0 or chunk >= stacked_inputs.shape[0]:
+            input_latents = wan_encode.encode_video(stacked_inputs, vae=self.vae, encoder=self.video_encoder)
+        else:
+            input_latents = torch.cat(
+                [
+                    wan_encode.encode_video(part, vae=self.vae, encoder=self.video_encoder)
+                    for part in torch.split(stacked_inputs, chunk, dim=0)
+                ],
+                dim=0,
+            )
         input_latents = input_latents.to(dtype=dtype, device=device)
 
         # Variant-specific first-frame / control conditioning lives in

@@ -38,6 +38,10 @@ FB_LIMIT = 0.5                 # cells (4 px at 256)
 MOVE_MIN = 0.75                # cells (6 px)
 STILL_MIN, STILL_MARGIN = 0.75, 0.12   # wrist view: zero-offset K similarity over time (gripper)
 CHANGE_SEGMENT, CHANGE_CELL = 0.35, 0.45   # third person: K change at a fixed position over +-8 frames
+# Per-benchmark third-person hand thresholds (cell, segment); None / unknown profile = the constants above
+# (LIBERO).  RoboCasa: chosen on sim GT (runs/robocasa_policy_check_20261109/sweep): kitchen texture makes the
+# K-change test fire across cabinets and walls at 0.45 / 0.35 (hand ~18% of the view).
+HAND_THRESHOLDS = {"robocasa": (0.75, 0.45)}
 BACKGROUND_AREA = {False: 0.30, True: 0.60}
 ROLE_HEAT = ("target_1", "destination_1", "target_2", "destination_2", "locator")
 WORD_HEAT = ("word_1", "word_2", "word_3")           # the automatically selected words (words.json)
@@ -346,7 +350,7 @@ def present_k(seg_k_l22h9, seg_k_l15h7):
                       F.normalize(torch.as_tensor(seg_k_l15h7).float(), dim=-1)), -1).cpu() / np.sqrt(2)
 
 
-def _window_core(fields, wrist):
+def _window_core(fields, wrist, profile=None):
     """Motion, segments and the hand of one camera window (shared by the role and word modes)."""
     if "dense" in fields:                                                      # precomputed (batched on device)
         dense, still_map, change_map = fields["dense"], fields["still"], fields["change"]
@@ -392,9 +396,10 @@ def _window_core(fields, wrist):
         # Third person: the gripper (and what it holds) is where the K at a fixed position
         # changes between the present and +-8 frames; tracking fails there (fast, deforming).
         change = change_map
-        hand = change > CHANGE_CELL
+        change_cell, change_segment = HAND_THRESHOLDS.get(profile, (CHANGE_CELL, CHANGE_SEGMENT))
+        hand = change > change_cell
         for part in parts:
-            if not part["background"] and change[part["mask"]].mean() > CHANGE_SEGMENT:
+            if not part["background"] and change[part["mask"]].mean() > change_segment:
                 hand |= part["mask"]
         still = change
     return {"dense": dense, "positions": positions, "valid": valid, "displacement": displacement,
@@ -465,7 +470,7 @@ def _diagnostics(core, role_masks, kept, heat):
             "roles": role_masks, "kept": kept, "heat": heat, "parts": core["parts"]}
 
 
-def window_maps(fields, tokens, wrist, keypoint_tracker=None, k_basis=None):
+def window_maps(fields, tokens, wrist, keypoint_tracker=None, k_basis=None, profile=None):
     """One camera window, role mode (grammar roles from ``role_tokens``; legacy, kept for the DP runs).
 
     ``fields``: student fields for this window (numpy or tensors): ``track_k`` [13, cells, C] in
@@ -480,7 +485,7 @@ def window_maps(fields, tokens, wrist, keypoint_tracker=None, k_basis=None):
     attention = np.asarray(fields["text_attention"], np.float32)
     heat = np.stack([[phrase_heat(attention[t], tokens[name], tokens.get("content") if t else None)
                       for name in HEAT_CHANNELS] for t in range(2)])
-    core = _window_core(fields, wrist)
+    core = _window_core(fields, wrist, profile)
     role_masks = {"hand": core["hand"]}
     for role in ("target", "destination"):
         mask = np.zeros(GRID * GRID, bool)
@@ -539,7 +544,7 @@ def select_words(attention, words, content, wrist):
     return [entry for entry in scored if entry[1] >= WORD_MIN[bool(wrist)]][:WORD_SLOTS]
 
 
-def word_window_maps(fields, words, wrist, keypoint_tracker=None, k_basis=None):
+def word_window_maps(fields, words, wrist, keypoint_tracker=None, k_basis=None, profile=None):
     """One camera window, word mode: no grammar.
 
     ``words``: ``content_words`` entries.  The most concentrated words (``select_words``) fill
@@ -552,7 +557,7 @@ def word_window_maps(fields, words, wrist, keypoint_tracker=None, k_basis=None):
     attention = np.asarray(fields["text_attention"], np.float32)
     content = [t for _, ids in words for t in ids]
     selected = select_words(attention, words, content, wrist)
-    core = _window_core(fields, wrist)
+    core = _window_core(fields, wrist, profile)
     role_masks = {"hand": core["hand"]}
     for role, column in (("words_now", 2), ("words_+16", 3)):
         mask = np.zeros(GRID * GRID, bool)

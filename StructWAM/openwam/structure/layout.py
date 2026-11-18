@@ -49,7 +49,9 @@ class KeypointLayout:
 class CanvasLayout:
     """Camera tiles of the multiview canvas, as fractions of its height / width."""
 
-    tiles: tuple = (("head", 0.0, 2 / 3, 0.0, 1.0), ("wrist", 2 / 3, 1.0, 0.0, 0.5))
+    # wrist_right = the canvas' bottom-right slot (black for LIBERO / RoboCasa; RoboTwin's right wrist).
+    tiles: tuple = (("head", 0.0, 2 / 3, 0.0, 1.0), ("wrist", 2 / 3, 1.0, 0.0, 0.5),
+                    ("wrist_right", 2 / 3, 1.0, 0.5, 1.0))
     mode: str = "lshape"
 
     @classmethod
@@ -59,12 +61,15 @@ class CanvasLayout:
             return cls()
         if mode == "side_by_side":
             return cls(tiles=(("head", 0.0, 1.0, 0.0, 0.5), ("wrist", 0.0, 1.0, 0.5, 1.0)), mode=mode)
-        raise ValueError(f"canvas layout must be lshape or side_by_side, got {mode!r}")
+        if mode == "side_by_side3":   # head | wrist | head_right (RoboCasa: left agentview | wrist | right agentview)
+            return cls(tiles=(("head", 0.0, 1.0, 0.0, 1 / 3), ("wrist", 0.0, 1.0, 1 / 3, 2 / 3),
+                              ("head_right", 0.0, 1.0, 2 / 3, 1.0)), mode=mode)
+        raise ValueError(f"canvas layout must be lshape, side_by_side or side_by_side3, got {mode!r}")
 
     def check_grid(self, height: int, width: int) -> None:
         """Fail loudly if a latent / token grid's aspect does not match this canvas mode."""
         wide = width >= 1.5 * height
-        if wide != (self.mode == "side_by_side"):
+        if wide != self.mode.startswith("side_by_side"):
             raise ValueError(f"canvas layout {self.mode!r} does not match a {height}x{width} grid; set "
                              "model.architecture.structure.canvas_layout to the dataloader's canvas_layout")
 

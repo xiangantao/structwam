@@ -7,6 +7,8 @@ their owners.  Nothing is cached between steps.
 """
 
 import json
+import os
+from collections import OrderedDict
 from multiprocessing import get_context
 
 import numpy as np
@@ -116,11 +118,12 @@ def maps_job(job):
     from .policy_maps import window_maps, word_window_maps
 
     torch.set_num_threads(1)
-    fields, tokens, wrist, k_basis, mode = job
+    fields, tokens, wrist, k_basis, mode = job[:5]
+    profile = job[5] if len(job) > 5 else None
     if mode == "words":
-        maps, keypoints, diagnostics = word_window_maps(fields, tokens, wrist, None, k_basis)
+        maps, keypoints, diagnostics = word_window_maps(fields, tokens, wrist, None, k_basis, profile)
         return maps, keypoints, diagnostics["selected"], diagnostics["selected_tokens"]
-    maps, keypoints, _ = window_maps(fields, tokens, wrist, None, k_basis)
+    maps, keypoints, _ = window_maps(fields, tokens, wrist, None, k_basis, profile)
     return maps, keypoints
 
 
@@ -150,7 +153,7 @@ class OnlineMaps:
     missing from the student's text cache are encoded with UMT5 on the fly.
     """
 
-    def __init__(self, checkpoint, roles_path=None, device="cuda", workers=16, *, text_root=None):
+    def __init__(self, checkpoint, roles_path=None, device="cuda", workers=16, *, text_root=None, maps_profile=None):
         saved = torch.load(str(checkpoint), map_location="cpu", weights_only=False, mmap=True)
         self.student = StructuredStudent(ModelConfig(**saved["config"]["model"]), pretrained=False)
         self.student.load_state_dict(saved["model"], strict=True)
@@ -165,9 +168,11 @@ class OnlineMaps:
         self.roles = json.loads(open(roles_path).read()) if roles_path else None
         self.words = {}
         self._tokenizer = self._encoder = None
-        self.text = {}
+        self.text = OrderedDict()       # device memo, LRU-bounded in text_for
+        self._encoded = OrderedDict()   # CPU memo of on-the-fly UMT5 results, bounded in text_for
         self.pool = get_context("spawn").Pool(workers)
         self.k_basis = None
+        self.maps_profile = maps_profile      # policy_maps.HAND_THRESHOLDS key; None = LIBERO constants
 
     @property
     def map_channels(self):
@@ -202,8 +207,20 @@ class OnlineMaps:
         return (hidden[0].float() * mask[0, :, None]).cpu()
 
     def text_for(self, tasks):
-        for task in set(tasks) - set(self.text):
+        # Device memo of instruction embeddings (fp32 [512, 4096], 8 MB each).  It used to keep every
+        # instruction for good: fine for LIBERO's 40, but RoboTwin training samples from ~159k "seen"
+        # instructions, so it grew ~64 MB per step per rank until the NPU ran out (11-12: steps 72 / 139).
+        # Now LRU-bounded to OPENWAM_STUDENT_TEXT_MEMO (default 64, never below this call's count); values
+        # are unchanged, an evicted instruction is rebuilt from the text cache or the CPU memo of UMT5
+        # results (OPENWAM_STUDENT_TEXT_CPU_MEMO, default 1024 x 4 MB bf16).
+        limit = max(int(os.environ.get("OPENWAM_STUDENT_TEXT_MEMO", "") or 64), len(set(tasks)))
+        for task in dict.fromkeys(tasks):
+            if task in self.text:
+                self.text.move_to_end(task)
+                continue
             embedding = self.text_cache.get(task)
+            if embedding is None:
+                embedding = self._encoded.get(task)
             if embedding is None:
                 # Eval-only: OPENWAM_STUDENT_TEXT_EXTRA=<.pt> holds the same UMT5 embeddings for
                 # instructions outside the cache (precomputed; bf16 is lossless here), so a server
@@ -222,8 +239,14 @@ class OnlineMaps:
                 if self.mode != "words":
                     raise KeyError(f"instruction not in the student's text cache: {task!r}")
                 embedding = self._encode(task)
+                # bf16 is lossless: the UMT5 encoder runs in bf16 and _encode only masks its rows with 0/1
+                self._encoded[task] = embedding.to(torch.bfloat16)
+                if len(self._encoded) > int(os.environ.get("OPENWAM_STUDENT_TEXT_CPU_MEMO", "") or 1024):
+                    self._encoded.popitem(last=False)
             self.text[task] = embedding.float().to(self.device)
         text = torch.stack([self.text[t] for t in tasks])
+        while len(self.text) > limit:
+            self.text.popitem(last=False)
         return text, text.abs().sum(-1) != 0
 
     def words_for(self, task):
@@ -235,7 +258,7 @@ class OnlineMaps:
         return self.words[task]
 
     @torch.no_grad()
-    def __call__(self, rgb, tasks, wrist):
+    def __call__(self, rgb, tasks, wrist, defer=False):
         """rgb [W, 33, 3, H, W] uint8 on device; tasks / wrist per window.
 
         Returns maps [W, len(self.map_channels), 32, 32], keypoint tokens [W, P, D] and their use
@@ -270,8 +293,21 @@ class OnlineMaps:
             fields = {"text_attention": torch.stack((now[w, :, :length], ahead[w, :, :length])).cpu().numpy(),
                       "seg_k_l22h9": seg["seg_k_l22h9"][w], "seg_k_l15h7": seg["seg_k_l15h7"][w], "depth": depth[w],
                       "dense": {k: v[w] for k, v in dense.items()}, "still": still[w], "change": change[w]}
-            jobs.append((fields, tokens, bool(wrist[w]), self.k_basis, self.mode))
-        results = self.pool.map(maps_job, jobs)
+            jobs.append((fields, tokens, bool(wrist[w]), self.k_basis, self.mode, self.maps_profile))
+        pending = {"async": self.pool.map_async(maps_job, jobs), "track_k": track_k, "tasks": tasks,
+                   "wrist": wrist, "output": output, "future": future, "text": text}
+        return pending if defer else self.collect(pending)
+
+    @torch.no_grad()
+    def collect(self, pending):
+        """Second half of ``__call__(..., defer=True)``: wait for the CPU map pool, then keypoints / outputs."""
+        from vace_latent_distill.policy_features import track_many
+
+        from .policy_maps import PRESENT, keypoint_tokens, present_k, refine_keypoints
+
+        results = pending["async"].get()
+        track_k, tasks, wrist = pending["track_k"], pending["tasks"], pending["wrist"]
+        output, future, text = pending["output"], pending["future"], pending["text"]
         maps = np.stack([r[0] for r in results])
         keypoints = [r[1] for r in results]
         # HEFT K-K keypoint tracks for all windows in one batched pass.

@@ -194,6 +194,9 @@ class LiberoDataset(LeRobotV3Reader):
         if self._multiview and self._canvas_layout == "side_by_side":
             # head | wrist at equal size: each camera keeps its square 1:1 frame (e.g. 256x512).
             expected_size = (self._height, 2 * self._height)
+        elif self._multiview and self._canvas_layout == "side_by_side3":
+            # three square cameras side by side at their native size (e.g. RoboCasa 224 x 672).
+            expected_size = (self._height, 3 * self._height)
         else:
             expected_size = (384, 320) if self._multiview else (256, 320)
         if (self._height, self._width) != expected_size:

@@ -321,7 +321,9 @@ class OpenWAMTrainer:
                 epoch_iter = skip_first_batches(dataloader, skip_first)
             else:
                 epoch_iter = dataloader
-            for batch in epoch_iter:
+            prefetch = os.environ.get("OPENWAM_STRUCT_PREFETCH", "").strip() == "1" and hasattr(
+                self.architecture, "prefetch_structure")
+            for batch, next_batch in _with_lookahead(epoch_iter, prefetch):
                 if self._run_seed is not None:
                     step_seed = per_step_seed(self._run_seed, rank=self._rank, step=global_step)
                     torch.manual_seed(step_seed)
@@ -330,6 +332,9 @@ class OpenWAMTrainer:
                 with self.accelerator.accumulate(self.architecture):
                     losses = self.compute_loss(batch)
                     loss = losses["total"]
+                    if next_batch is not None:
+                        # next batch's student CPU maps run during this backward + optimizer step
+                        self.architecture.prefetch_structure(next_batch)
                     self.accelerator.backward(loss)
 
                     grad_norm = torch.tensor(0.0, device=loss.device)
@@ -704,3 +709,20 @@ class OpenWAMTrainer:
             finalize_keep_weights_only(output_path, keep_last_k)
         if wandb_run is not None:
             wandb_run.finish()
+
+
+def _with_lookahead(iterable, enabled):
+    """Yield (batch, next_batch); next_batch is None when disabled or at the end of the iterable."""
+    if not enabled:
+        for item in iterable:
+            yield item, None
+        return
+    iterator = iter(iterable)
+    try:
+        current = next(iterator)
+    except StopIteration:
+        return
+    for upcoming in iterator:
+        yield current, upcoming
+        current = upcoming
+    yield current, None

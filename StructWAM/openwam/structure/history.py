@@ -11,7 +11,7 @@ from typing import Optional
 
 import numpy as np
 
-CAMERAS = ("head", "wrist")
+CAMERAS = ("head", "wrist", "wrist_right", "head_right")   # wrist_right: RoboTwin right wrist; head_right: RoboCasa right agentview; cameras never pushed are left out
 
 
 def to_uint8(image, size: int) -> np.ndarray:

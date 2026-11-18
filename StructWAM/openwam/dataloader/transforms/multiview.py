@@ -19,13 +19,20 @@ from PIL import Image
 # ``camera_layout`` and should mirror this list byte-for-byte.
 DEFAULT_MULTIVIEW_CAMERA_LAYOUT = ("head_camera", "left_camera", "right_camera")
 
-# Canvas modes: "lshape" (default; top camera over two bottom halves) or "side_by_side" (the first two
-# layout cameras left | right at equal size, H x W/2 each; the third slot must be empty).
-CANVAS_LAYOUTS = ("lshape", "side_by_side")
+# Canvas modes: "lshape" (default; top camera over two bottom halves), "side_by_side" (the first two
+# layout cameras left | right at equal size, H x W/2 each; the third slot must be empty) or
+# "side_by_side3" (all three layout cameras left | middle | right at equal size, H x W/3 each; e.g.
+# RoboCasa left agentview | wrist | right agentview at 224 x 672).
+CANVAS_LAYOUTS = ("lshape", "side_by_side", "side_by_side3")
 
 
 def canvas_slot_size(mode: str, out_h: int, out_w: int, slot: int, top_height_ratio: float = 2.0 / 3.0):
     """(height, width) a camera is resized to in canvas slot 0 / 1 / 2."""
+    if mode == "side_by_side3":
+        if slot > 2:
+            raise ValueError("side_by_side3 canvases have three slots")
+        third = out_w // 3
+        return out_h, (third if slot < 2 else out_w - 2 * third)
     if mode == "side_by_side":
         if slot > 1:
             raise ValueError("side_by_side canvases have two slots")
@@ -45,6 +52,21 @@ def _assemble_side_by_side(frames_by_camera: dict, camera_layout: list, out_h: i
     left_w = out_w // 2
     for slot, x0, x1 in ((0, 0, left_w), (1, left_w, out_w)):
         frame = frames_by_camera.get(camera_layout[slot])
+        if frame is not None:
+            canvas.paste(_stretch_resize(frame, out_h, x1 - x0), (x0, 0))
+        elif missing_mask is not None:
+            missing_mask.paste(255, (x0, 0, x1, out_h))
+    return (canvas, missing_mask) if return_missing_mask else canvas
+
+
+def _assemble_side_by_side3(frames_by_camera: dict, camera_layout: list, out_h: int, out_w: int,
+                            return_missing_mask: bool):
+    canvas = Image.new("RGB", (out_w, out_h), (0, 0, 0))
+    missing_mask = Image.new("L", (out_w, out_h), 0) if return_missing_mask else None
+    third = out_w // 3
+    for slot, x0, x1 in ((0, 0, third), (1, third, 2 * third), (2, 2 * third, out_w)):
+        name = camera_layout[slot] if slot < len(camera_layout) else None
+        frame = frames_by_camera.get(name) if name is not None else None
         if frame is not None:
             canvas.paste(_stretch_resize(frame, out_h, x1 - x0), (x0, 0))
         elif missing_mask is not None:
@@ -116,6 +138,8 @@ def assemble_multiview_layout(
         raise ValueError(f"multiview layout expects 3 cameras, got {len(camera_layout)}: {camera_layout}")
     if mode == "side_by_side":
         return _assemble_side_by_side(frames_by_camera, camera_layout, out_h, out_w, return_missing_mask)
+    if mode == "side_by_side3":
+        return _assemble_side_by_side3(frames_by_camera, camera_layout, out_h, out_w, return_missing_mask)
     if mode != "lshape":
         raise ValueError(f"canvas mode must be one of {CANVAS_LAYOUTS}, got {mode!r}")
 

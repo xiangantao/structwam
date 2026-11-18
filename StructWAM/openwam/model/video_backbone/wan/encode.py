@@ -15,13 +15,15 @@ from torch import Tensor
 from openwam.model.video_backbone.wan.preprocess import preprocess_video as _preprocess_video_native
 from openwam.model.video_backbone.wan.preprocess import vae_output_to_video
 
+TEXT_MAX_LENGTH = 512
+
 
 def encode_text(prompts: list, *, tokenizer, text_encoder, device) -> Tuple[Tensor, Tensor]:
     ids, mask = tokenizer(
         prompts,
         return_mask=True,
         add_special_tokens=True,
-        max_length=512,
+        max_length=TEXT_MAX_LENGTH,
         padding="max_length",
         truncation=True,
     )
@@ -32,6 +34,39 @@ def encode_text(prompts: list, *, tokenizer, text_encoder, device) -> Tuple[Tens
     for i, v in enumerate(seq_lens):
         context[i, v:] = 0
     return context, seq_lens
+
+
+def load_text_cache(path: str) -> dict:
+    """Prompt → ``[seq_len, dim]`` UMT5 context, as written by
+    ``scripts/structwam/build_wan_text_cache.py`` (kept on CPU)."""
+    payload = torch.load(path, map_location="cpu")
+    if payload.get("max_length") != TEXT_MAX_LENGTH:
+        raise ValueError(
+            f"text cache {path} was built with max_length={payload.get('max_length')}, expected {TEXT_MAX_LENGTH}"
+        )
+    embeds = payload["embeds"]
+    if not embeds:
+        raise ValueError(f"text cache {path} holds no prompts")
+    return embeds
+
+
+def cached_text_context(prompts: list, *, cache: dict, device) -> Tuple[Tensor, Tensor]:
+    """``encode_text`` from a prompt-keyed cache. Entries hold only the first
+    ``seq_len`` rows; the rest are zero-filled, as ``encode_text`` leaves them.
+    A prompt missing from the cache raises (no silent fallback to the encoder).
+    """
+    missing = sorted({p for p in prompts if p not in cache})
+    if missing:
+        raise KeyError(
+            f"{len(missing)} prompt(s) not in the text cache (first: {missing[0]!r}); "
+            "rebuild it with scripts/structwam/build_wan_text_cache.py"
+        )
+    rows = [cache[p] for p in prompts]
+    context = rows[0].new_zeros(len(rows), TEXT_MAX_LENGTH, rows[0].shape[-1])
+    for i, row in enumerate(rows):
+        context[i, : row.shape[0]] = row
+    seq_lens = torch.tensor([row.shape[0] for row in rows], dtype=torch.long)
+    return context.to(device), seq_lens.to(device)
 
 
 def encode_text_for_inference(

@@ -147,7 +147,10 @@ class OfflineStructuredDataset(Dataset):
             raise ValueError("Offline manifest mixes different teacher protocols")
         self.text = torch.load(text_cache, map_location="cpu", weights_only=True)
         self.image_size = image_size
-        self.cache = ArtifactCache(cache_dir, cache_limit_bytes)
+        # Rows produced by cache_vace_teacher_local.py carry target_path and never touch
+        # TOS; skip the shared SQLite index then, so 8 ranks don't race on it over NFS.
+        self.cache = (ArtifactCache(cache_dir, cache_limit_bytes)
+                      if any("target_path" not in row for row in self.rows) else None)
         self.store_options = {"config": tos_config, "endpoint": tos_endpoint}
         self.manifest = manifest
         self.epoch = 0

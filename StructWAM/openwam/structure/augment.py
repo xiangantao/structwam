@@ -108,7 +108,9 @@ class ConsistentAugment:
         if mode != "RGB":
             img = img.convert("RGB")
         if camera == "head":
-            img = self._affine(img, p)
+            # geometry off (rotate_deg 0, scale_max 1) gives an exact identity: skip the resampling
+            if p["theta"] != 0.0 or p["scale"] != 1.0 or tuple(p["shift"]) != (0.0, 0.0):
+                img = self._affine(img, p)
             if p["blur"] > 0:
                 img = img.filter(ImageFilter.GaussianBlur(p["blur"] * img.size[0] / 256))
         color = p["wrist_color"] if camera == "wrist" and "wrist_color" in p else p

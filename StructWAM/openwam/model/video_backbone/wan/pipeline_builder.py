@@ -161,6 +161,18 @@ def _filter_native_vae_configs(model_configs):
     return kept
 
 
+def is_text_encoder_config(c) -> bool:
+    """True for the UMT5 text-encoder weight file (``models_t5_umt5-xxl-enc-bf16.*``)."""
+    candidates = []
+    if isinstance(c.path, list):
+        candidates.extend(str(p) for p in c.path if p)
+    elif c.path is not None:
+        candidates.append(str(c.path))
+    if c.origin_file_pattern is not None:
+        candidates.append(str(c.origin_file_pattern))
+    return any("umt5" in os.path.basename(s).lower() for s in candidates)
+
+
 def build_training_pipeline(cfg: DictConfig, *, skip_native_vae: bool = False):
     """Build WanVideoPipeline from Hydra config.
 
@@ -177,6 +189,11 @@ def build_training_pipeline(cfg: DictConfig, *, skip_native_vae: bool = False):
             irreversible external-encoder path so the ~1.5GB Wan2.2 VAE
             never materializes on CPU only to be released immediately.
 
+    ``cfg.model.video_backbone.text_cache_path`` (optional): a precomputed
+    prompt → UMT5 context cache. When set, the UMT5 weight file is dropped
+    before loading (the frozen text encoder never materializes) and the cache
+    rides on the holder as ``text_cache`` for ``preprocess_input_for_train``.
+
     Returns:
         Initialized WanVideoPipeline ready for training.
     """
@@ -187,12 +204,15 @@ def build_training_pipeline(cfg: DictConfig, *, skip_native_vae: bool = False):
 
     device = "cpu" if bool(t.initialize_model_on_cpu) else "cuda"
     model_dir = str(backbone_cfg.model_path)
+    text_cache_path = backbone_cfg.get("text_cache_path", None)
 
     _warn_on_name_path_mismatch(backbone_cfg.get("name", None), model_dir)
 
     model_configs, tokenizer_config = discover_model_files(model_dir)
     if skip_native_vae:
         model_configs = _filter_native_vae_configs(model_configs)
+    if text_cache_path:
+        model_configs = [c for c in model_configs if not is_text_encoder_config(c)]
 
     # Load components
     pipe = load_wan_components(
@@ -201,6 +221,14 @@ def build_training_pipeline(cfg: DictConfig, *, skip_native_vae: bool = False):
         device=device,
         torch_dtype=torch.bfloat16,
     )
+
+    if text_cache_path:
+        from openwam.model.video_backbone.wan.encode import load_text_cache
+
+        if pipe.text_encoder is not None:
+            raise RuntimeError(f"text_cache_path is set but a text encoder was still loaded from {model_dir}")
+        pipe.text_cache = load_text_cache(str(text_cache_path))
+        logger.info("Wan text encoder not loaded; %d prompts from %s", len(pipe.text_cache), text_cache_path)
 
     # Gradient checkpointing — the holder is not an nn.Module, so walk each
     # loaded sub-module's own tree (was ``pipe.modules()`` on the old pipeline).

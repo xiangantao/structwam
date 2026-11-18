@@ -10,3 +10,4 @@ model_path: /path/to/Wan2.2-TI2V-5B  # [Required] weights dir
 
 from_scratch: false   # true = re-init the DiT from scratch (VAE/text encoder still load + freeze)
 shift_video: 5.0      # flow-matching α-shift for the video scheduler (train + deploy single source of truth)
+text_cache_path: null # training only: prompt → UMT5 context cache (scripts/structwam/build_wan_text_cache.py); set → UMT5 is not loaded

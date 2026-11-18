@@ -44,7 +44,8 @@ from openwam.structure.layout import CanvasLayout
 from openwam.structure.phase import PhaseGate
 from openwam.structure.routing import RoutingBias
 from openwam.structure.sketch import SketchHead, masked_action_mse, shape_schedule, warm_start
-from openwam.structure.student import StructureStudent, StudentConfig, map_channel_names, word_slots
+from openwam.structure.student import (CAMERA_IS_WRIST, RawVJEPA, StructureStudent, StudentConfig,
+                                       map_channel_names, word_slots)
 from openwam.structure.tokens import GROUPS
 
 logger = logging.getLogger(__name__)
@@ -189,7 +190,13 @@ class TriSystemStructArchitecture(BaseWAMArchitecture):
         if self._student is None:
             if self.student_cfg is None:
                 raise ValueError("architecture.structure.student is not configured")
-            self._student = StructureStudent(self.student_cfg, self.device)
+            encoder = str(getattr(self.student_cfg, "encoder", "vace"))
+            if encoder == "vjepa_raw":
+                self._student = RawVJEPA(self.student_cfg, self.device)
+            elif encoder == "vace":
+                self._student = StructureStudent(self.student_cfg, self.device)
+            else:
+                raise ValueError(f"structure.student.encoder must be vace or vjepa_raw, got {encoder!r}")
         return self._student
 
     @property
@@ -215,12 +222,16 @@ class TriSystemStructArchitecture(BaseWAMArchitecture):
                 module.to(dtype=dtype, device=device)
 
     def _wrist_video_tokens(self, vstate) -> Optional[Tensor]:
-        if "wrist" not in self.cameras:
+        """Video tokens of the wrist tiles (both wrists for bimanual, e.g. RoboTwin's wrist + wrist_right)."""
+        wrists = [camera for camera in self.cameras if CAMERA_IS_WRIST.get(camera, False)]
+        if not wrists:
             return None
         frames, height, width = int(vstate.grid_frames), int(vstate.grid_height), int(vstate.grid_width)
         self.layout.check_grid(height, width)
-        region = self.layout.region_mask("wrist", height, width, device=self.device).flatten()
-        return region.repeat(frames)
+        region = self.layout.region_mask(wrists[0], height, width, device=self.device)
+        for camera in wrists[1:]:
+            region = region | self.layout.region_mask(camera, height, width, device=self.device)
+        return region.flatten().repeat(frames)
 
     # ----- training inputs ------------------------------------------------------
 
@@ -228,17 +239,45 @@ class TriSystemStructArchitecture(BaseWAMArchitecture):
     def prepare_inputs(self, batch: list[dict]) -> dict:
         if isinstance(batch, dict):
             batch = [batch]
-        inputs = super().prepare_inputs(batch)
         histories = [sample.get("structure_frames") or {} for sample in batch]
         frames = {}
         for camera in self.cameras:
             clips = [history.get(camera) for history in histories]
             if all(clip is not None for clip in clips):
                 frames[camera] = torch.from_numpy(np.stack(clips))
-        inputs["structure"] = self.student.encode(frames, [sample["prompt"] for sample in batch])
+        prompts = [sample["prompt"] for sample in batch]
+        pending = self.__dict__.pop("_structure_prefetch", None)
+        if pending is not None and pending["batch"] is batch:
+            inputs = super().prepare_inputs(batch)
+            inputs["structure"] = self.student.collect(pending["launched"])
+        elif getattr(self.student.config, "async_maps", False):
+            # The student's CPU map pool runs while the video VAE / text encoder below use the device.
+            launched = self.student.launch(frames, prompts)
+            inputs = super().prepare_inputs(batch)
+            inputs["structure"] = self.student.collect(launched)
+        else:
+            inputs = super().prepare_inputs(batch)
+            inputs["structure"] = self.student.encode(frames, prompts)
         if all("phase_chunk" in sample for sample in batch):
             inputs["phase_target"] = torch.tensor([float(s["phase_chunk"]) for s in batch], device=self.device)
         return inputs
+
+    @torch.no_grad()
+    def prefetch_structure(self, batch) -> None:
+        """Launch the structure student for an upcoming batch (consumed by ``prepare_inputs`` of that batch)."""
+        if isinstance(batch, dict):
+            return
+        histories = [sample.get("structure_frames") or {} for sample in batch]
+        frames = {}
+        for camera in self.cameras:
+            clips = [history.get(camera) for history in histories]
+            if all(clip is not None for clip in clips):
+                frames[camera] = torch.from_numpy(np.stack(clips))
+        stale = self.__dict__.pop("_structure_prefetch", None)
+        if stale is not None:
+            self.student.collect(stale["launched"])   # drain an unused launch so the pool stays in order
+        self._structure_prefetch = {"batch": batch,
+                                    "launched": self.student.launch(frames, [s["prompt"] for s in batch])}
 
     # ----- forward --------------------------------------------------------------
 
@@ -419,16 +458,26 @@ class TriSystemStructArchitecture(BaseWAMArchitecture):
             return super()._compute_video_loss(noise_pred, target, timestep_ids, inputs, device)
         vb = self.video_backbone
         structure = _match_batch(structure, noise_pred.shape[0])
+        has_maps = all("maps" in value for value in structure.values())
+        has_tracks = all("keypoints" in value for value in structure.values())
+        strength = float(self.loss_cfg.get("video_saliency", 0.0))
+        if strength > 0 and not has_maps:
+            raise ValueError("losses.video_saliency needs student maps; set it to 0 for a trunk-only encoder")
         pixel = structure_losses.video_weights(structure, self.saliency_channels(), self.layout,
-                                               noise_pred.shape[-2:], float(self.loss_cfg.get("video_saliency", 0.0)))
+                                               noise_pred.shape[-2:], strength) if strength > 0 else None
         sketch = self._aux.get("sketch")
         sketch_error = self._sketch_error(sketch).detach() if sketch is not None and \
             self._loss_context.get("actions") is not None else None
         phase = inputs.get("phase_target")
         if phase is None:
             phase = torch.zeros(noise_pred.shape[0], device=noise_pred.device)
-        sample = structure_losses.difficulty(phase, structure_losses.mean_track_similarity(structure), sketch_error,
-                                             self.loss_cfg.get("difficulty", (0.0, 0.0, 0.0)))
+        coefficients = self.loss_cfg.get("difficulty", (0.0, 0.0, 0.0))
+        if float(coefficients[1]) > 0 and not has_tracks:
+            raise ValueError("losses.difficulty[1] (unsure tracks) needs student keypoints; set it to 0 for a "
+                             "trunk-only encoder")
+        similarity = structure_losses.mean_track_similarity(structure) if has_tracks else \
+            torch.ones(noise_pred.shape[0], device=noise_pred.device)
+        sample = structure_losses.difficulty(phase, similarity, sketch_error, coefficients)
         timestep_weight = vb.scheduler.linear_timesteps_weights[timestep_ids].to(dtype=torch.float32, device=device)
         loss = structure_losses.weighted_video_mse(noise_pred, target, timestep_weight,
                                                    n_skip=self._video_skip(noise_pred, inputs),

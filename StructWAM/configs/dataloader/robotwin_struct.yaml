@@ -1,0 +1,54 @@
+# RoboTwin 2.0 for StructWAM: the canonical RoboTwin reader (configs/dataloader/robotwin.yaml) plus
+# the structure student's frame history (head + both wrists) and the bimanual contact phase
+# (openwam/dataloader/robotwin_struct.py).
+type: robotwin_struct
+dataset_dir: /path/to/robotwin2.0/dataset
+embodiment: aloha-agilex
+variant: clean_50                 # Clean2Random: train on clean_50 only (Full: both)
+
+# ── Action space (as robotwin.yaml): 20-D eef scattered into the unified 80-D vector ──────────
+action_mode: eef
+unify_action: true
+unify_action_map: ["0-9", "34-43"]
+unify_state_map: null
+
+# ── Frame sampling ──────────────────────────────────────────────────────────────────────────
+num_frames: 33
+video_stride: 4
+window_stride: 1
+split: train
+
+# ── Rendering: 3-slot L-shape canvas [head | left wrist, right wrist] at 384x320 ────────────────
+height: 384
+width: 320
+multiview: true
+camera_layout: [head_camera, left_camera, right_camera]
+canvas_layout: lshape            # read by the model's structure.canvas_layout; the reader is always L-shape
+target_camera: head_camera
+
+# Stats: <dataset_dir>/meta/robotwin_<variant>_normalization_stats.npy (auto-built on first use)
+normalize_mode: min-max
+
+color_jitter:
+  enabled: false
+
+# ── Structure stream (StructWAM) ──────────────────────────────────────────────────────────
+structure_history: 33            # raw frames per camera ending at the present (student input)
+structure_size: 256              # student resolution (each 320x240 frame is stretched to 256x256)
+phase_sigma: 8.0                 # contact-phase width in frames
+structure_cameras:               # structure camera -> HDF5 camera (= canvas slot)
+  head: head_camera
+  wrist: left_camera
+  wrist_right: right_camera
+
+structure_augment:
+  enabled: false
+  rotate_deg: 4.0
+  scale_max: 1.2
+  brightness: 0.25
+  contrast: 0.25
+  saturation: 0.3
+  blur_prob: 0.2
+  blur_radius: 1.5
+  hue: 0.0
+  independent_color: false

@@ -247,25 +247,46 @@ def build_holder_from_components(
     return holder
 
 
-def build_holder_from_model_path(model_path: str, device: str = "cpu", *, skip_native_vae: bool = False):
+def build_holder_from_model_path(
+    model_path: str,
+    device: str = "cpu",
+    *,
+    skip_native_vae: bool = False,
+    text_cache_path: Optional[str] = None,
+):
     """Build a component holder from a model dir without full Hydra config.
     ``skip_native_vae`` drops the native VAE weight file before it
     materializes (irreversible external-encoder path).
+    ``text_cache_path`` (training only): drop the UMT5 weight file and attach
+    the precomputed prompt cache as ``holder.text_cache`` instead. This is the
+    path training actually takes (the architecture hands the backbone a plain
+    dict, not the full Hydra cfg), so the cache must be honored here.
     """
     from openwam.model.video_backbone.wan.pipeline_builder import (
         _filter_native_vae_configs,
         discover_model_files,
+        is_text_encoder_config,
     )
 
     model_configs, tokenizer_config = discover_model_files(model_path)
     if skip_native_vae:
         model_configs = _filter_native_vae_configs(model_configs)
-    return load_wan_components(
+    if text_cache_path:
+        model_configs = [c for c in model_configs if not is_text_encoder_config(c)]
+    holder = load_wan_components(
         model_configs,
         tokenizer_config,
         device=device,
         torch_dtype=torch.bfloat16,
     )
+    if text_cache_path:
+        from openwam.model.video_backbone.wan.encode import load_text_cache
+
+        if getattr(holder, "text_encoder", None) is not None:
+            raise RuntimeError(f"text_cache_path is set but a text encoder was still loaded from {model_path}")
+        holder.text_cache = load_text_cache(str(text_cache_path))
+        logger.info("Wan text encoder not loaded; %d prompts from %s", len(holder.text_cache), text_cache_path)
+    return holder
 
 
 def build_holder(source, *, skip_native_vae: bool = False, **kw):
@@ -299,7 +320,15 @@ def build_holder(source, *, skip_native_vae: bool = False, **kw):
         model_path = vb_cfg.get("model_path") if isinstance(vb_cfg, dict) else getattr(vb_cfg, "model_path", None)
         if model_path is None:
             raise ValueError("dict source must contain 'video_backbone.components' or 'video_backbone.model_path'")
+        text_cache_path = (
+            vb_cfg.get("text_cache_path") if isinstance(vb_cfg, dict) else getattr(vb_cfg, "text_cache_path", None)
+        )
+        # Pass text_cache_path only when set, so the call is unchanged without a text cache.
+        extra = {"text_cache_path": text_cache_path} if text_cache_path else {}
         return build_holder_from_model_path(
-            str(model_path), device=kw.get("device", "cpu"), skip_native_vae=skip_native_vae
+            str(model_path),
+            device=kw.get("device", "cpu"),
+            skip_native_vae=skip_native_vae,
+            **extra,
         )
     return source

@@ -49,7 +49,7 @@ class SketchHead(nn.Module):
         parts = [pooled]
         for camera in self.cameras:
             value = features.get(camera)
-            if value is None:
+            if value is None or "keypoints" not in value:   # no camera, or a trunk-only encoder (raw V-JEPA2)
                 parts.append(pooled.new_zeros(pooled.shape[0], STEPS * 4))
             else:
                 parts.append(hand_track_features(value["keypoints"].to(pooled.dtype), value["keypoint_use"]))

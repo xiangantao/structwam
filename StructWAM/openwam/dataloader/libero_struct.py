@@ -117,7 +117,11 @@ class LiberoStructDataset(LiberoDataset):
         offset = int(self._ep_valid_start[ep_local]) + (idx - int(self._cum_n_starts[ep_local])) * self._window_stride
         row = self._eps_df.iloc[ep_local]
         frames = {}
-        for name, camera in (("head", self._head_camera), ("wrist", self._left_wrist_camera)):
+        cameras = [("head", self._head_camera), ("wrist", self._left_wrist_camera)]
+        if self._multiview and self._canvas_layout == "side_by_side3":
+            # the canvas' third camera is a second exterior view (RoboCasa right agentview), not a wrist
+            cameras.append(("head_right", self._right_wrist_camera))
+        for name, camera in cameras:
             clip = self._decode_history(camera, row, ep_local, offset, kind=name)
             if clip is not None:
                 frames[name] = clip
